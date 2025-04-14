@@ -493,33 +493,34 @@ export default function EbookGenerator() {
     }
   }
 
-  // Atualizar a função handleDownloadEbook
+  // Função para baixar o ebook
   const handleDownloadEbook = () => {
-    if (!ebookState || ebookPages.length === 0) return
+    // Log para verificar se a função é chamada
+    console.log("handleDownloadEbook called. Ebook ID:", currentEbookId);
 
-    // Ordenar as páginas por índice
-    const sortedPages = [...ebookPages].sort((a, b) => a.index - b.index)
+    if (!currentEbookId) {
+      setError("Não há ID de ebook atual para baixar.");
+      return;
+    }
+    // Construir a URL de download
+    const downloadUrl = `/api/ebook/${currentEbookId}/download`;
+    console.log("Attempting to download from:", downloadUrl);
 
-    // Criar o texto do ebook
-    const ebookText = [
-      `# ${ebookState.title}`,
-      ebookState.description,
-      ...sortedPages.map((page, index) => {
-        const pageNumber = index + 1
-        return `## Página ${pageNumber}: ${ebookState.title} - Parte ${pageNumber}\n\n${page.content}`
-      }),
-    ].join("\n\n")
+    // Iniciar o download (forma simples via navegação)
+    // Isso deve funcionar, mas não registra uma entrada óbvia no Network as vezes
+    // como um fetch, mas o download deve iniciar.
+    window.location.href = downloadUrl;
 
-    // Criar e baixar o arquivo
-    const blob = new Blob([ebookText], { type: "text/plain" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `${ebookState.title.replace(/\s+/g, "-").toLowerCase()}.txt`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
+    // Alternativa (menos comum para downloads diretos):
+    // fetch(downloadUrl)
+    //  .then(response => {
+    //    if (!response.ok) throw new Error('Download failed');
+    //    // ... (lógica mais complexa para criar blob e link, geralmente não necessária)
+    //  })
+    //  .catch(err => {
+    //    console.error("Download fetch error:", err);
+    //    setError("Falha ao iniciar o download.");
+    //  });
   }
 
   // Função para forçar a atualização do status
