@@ -196,12 +196,12 @@ export default function BibliotecaPage() {
               </div>
             </CardContent>
             <CardFooter className="pt-2">
-              <div className="flex justify-between w-full">
-                <Button variant="outline" size="sm" onClick={() => handleViewEbook(ebook)}>
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center w-full gap-2">
+                <Button variant="outline" size="sm" onClick={() => handleViewEbook(ebook)} className="w-full sm:w-auto">
                   <Eye className="h-4 w-4 mr-1" />
                   Visualizar
                 </Button>
-                <div className="flex gap-2">
+                <div className="flex gap-2 self-end sm:self-center">
                   <Button variant="outline" size="sm" onClick={() => handleDownloadEbook(ebook)}>
                     <Download className="h-4 w-4" />
                   </Button>
@@ -225,7 +225,7 @@ export default function BibliotecaPage() {
 
     return (
       <div className="space-y-6">
-        <div className="flex justify-between items-center">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <div>
             <h2 className="text-xl font-medium">{selectedEbook.title}</h2>
             <p className="text-sm text-muted-foreground mt-1">{selectedEbook.description}</p>
@@ -235,7 +235,7 @@ export default function BibliotecaPage() {
               <Download className="h-4 w-4 mr-2" />
               Baixar
             </Button>
-            <Button variant="outline" onClick={() => setSelectedEbook(null)}>
+            <Button variant="outline" onClick={() => setSelectedEbook(null)} className="w-full sm:w-auto">
               <ArrowLeft className="h-4 w-4 mr-2" />
               Voltar
             </Button>
@@ -290,7 +290,7 @@ export default function BibliotecaPage() {
           </div>
 
           <Tabs defaultValue="all" className="mb-6">
-            <TabsList className="mb-4">
+            <TabsList className="mb-4 overflow-x-auto whitespace-nowrap pb-2">
               <TabsTrigger value="all">Todos</TabsTrigger>
               <TabsTrigger value="completed">Completos</TabsTrigger>
               <TabsTrigger value="partial">Parciais</TabsTrigger>
