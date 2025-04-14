@@ -61,6 +61,14 @@ export function getCurrentContentMode() {
 }
 
 export async function generateEbookDescription(title: string): Promise<string> {
+  // Log para depuração
+  console.log("generateEbookDescription called.");
+  console.log("OpenAI API Key defined?", !!process.env.OPENAI_API_KEY);
+  // Se quiser ver os primeiros/últimos caracteres da chave (NÃO LOGUE A CHAVE INTEIRA):
+  // if (process.env.OPENAI_API_KEY) {
+  //   console.log("API Key starts/ends with:", process.env.OPENAI_API_KEY.substring(0, 5) + "..." + process.env.OPENAI_API_KEY.substring(process.env.OPENAI_API_KEY.length - 4));
+  // }
+
   try {
     const { text } = await generateText({
       model: openai("gpt-4o"),
