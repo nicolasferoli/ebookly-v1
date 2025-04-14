@@ -268,59 +268,67 @@ export async function getEbookState(ebookId: string): Promise<EbookQueueState | 
   }
 }
 
-// Função para obter as páginas de um ebook
+// Função para obter as páginas de um ebook (otimizada com MGET)
 export async function getEbookPages(ebookId: string): Promise<EbookQueuePage[]> {
   try {
-    // Verificar a conexão com o Redis
     const isConnected = await checkRedisConnection()
     if (!isConnected) {
       console.warn("Não foi possível conectar ao Redis. Retornando array vazio.")
       return []
     }
 
-    // Verificar se o cliente Redis está disponível
     const client = getRedisClient()
     if (!client) {
       console.warn("Cliente Redis não está disponível. Retornando array vazio.")
       return []
     }
 
-    try {
-      // Em vez de usar keys, vamos tentar obter cada página diretamente
-      // Assumindo que sabemos que um ebook tem no máximo 30 páginas
-      const pages: EbookQueuePage[] = []
+    // Primeiro, obter o estado do ebook para saber o total de páginas
+    const ebookState = await getEbookState(ebookId);
+    if (!ebookState) {
+        console.warn(`Estado do ebook ${ebookId} não encontrado ao buscar páginas. Retornando array vazio.`);
+        return [];
+    }
+    const totalPages = ebookState.totalPages;
 
-      for (let i = 0; i < 30; i++) {
+    if (totalPages <= 0) {
+        return []; // Nenhuma página para buscar
+    }
+
+    // Criar a lista de todas as chaves de página
+    const pageKeys = Array.from({ length: totalPages }, (_, i) => `${EBOOK_PAGE_PREFIX}${ebookId}:${i}`);
+
+    // Usar MGET para buscar todas as chaves de uma vez
+    const results = await client.mget<string[]>(...pageKeys);
+
+    const pages: EbookQueuePage[] = [];
+    results.forEach((pageData, index) => {
+      if (pageData) {
         try {
-          const pageKey = `${EBOOK_PAGE_PREFIX}${ebookId}:${i}`
-          const pageData = await client.get(pageKey)
-
-          if (pageData) {
-            // Converter pageData para objeto
-            if (typeof pageData === "object" && pageData !== null && !Array.isArray(pageData)) {
-              pages.push(pageData as EbookQueuePage)
-            } else if (typeof pageData === "string") {
-              try {
-                pages.push(JSON.parse(pageData) as EbookQueuePage)
-              } catch (parseError) {
-                console.error(`Erro ao fazer parse da página ${i}:`, parseError)
-              }
-            }
+          // Tentar fazer o parse de cada resultado não nulo
+          const parsedPage = JSON.parse(pageData) as EbookQueuePage;
+          // Verificar se tem as propriedades mínimas esperadas após parse
+          if (parsedPage.ebookId && typeof parsedPage.pageIndex === 'number' && parsedPage.pageTitle) {
+              pages.push(parsedPage);
+          } else {
+              console.warn(`Dados da página ${index} inválidos após parse:`, parsedPage)
           }
-        } catch (pageError) {
-          console.error(`Erro ao obter página ${i}:`, pageError)
-          // Continuar para a próxima página
+
+        } catch (parseError) {
+          console.error(`Erro ao fazer parse da página ${index} (chave ${pageKeys[index]}):`, parseError);
         }
       }
+      // Ignorar resultados nulos (páginas não encontradas)
+    });
 
-      return pages
-    } catch (error) {
-      console.error("Erro ao obter páginas do ebook:", error)
-      return []
-    }
+    // Ordenar pelo índice para garantir a ordem correta
+    pages.sort((a, b) => a.pageIndex - b.pageIndex);
+
+    return pages;
+
   } catch (error) {
-    console.error("Erro ao obter páginas do ebook:", error)
-    return []
+    console.error(`Erro ao obter páginas do ebook ${ebookId} com mget:`, error);
+    return []; // Retornar array vazio em caso de erro
   }
 }
 
