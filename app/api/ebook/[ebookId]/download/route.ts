@@ -25,6 +25,15 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
         p.description { font-style: italic; margin-bottom: 40px; }
         .page-content { margin-top: 15px; white-space: pre-wrap; } /* Preserve line breaks */
         .warning { color: #888; font-style: italic; margin-top: 50px; border-top: 1px solid #ccc; padding-top: 10px; }
+
+        /* Adiciona números de página no rodapé */
+        @page {
+          @bottom-center {
+            content: counter(page);
+            font-size: 9pt;
+            color: #888;
+          }
+        }
       </style>
     </head>
     <body>
