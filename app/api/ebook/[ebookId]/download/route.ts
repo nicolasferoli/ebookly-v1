@@ -46,12 +46,18 @@ export async function GET(
     }
 
     // Obter os dados das fontes como ArrayBuffer
-    const [fontRegularData, fontBoldData, fontItalicData] = await Promise.all([
+    const [fontRegularArrayBuffer, fontBoldArrayBuffer, fontItalicArrayBuffer] = await Promise.all([
       fontRegularResponse.arrayBuffer(),
       fontBoldResponse.arrayBuffer(),
       fontItalicResponse.arrayBuffer(),
     ]);
-    console.log("Fontes buscadas com sucesso.");
+    
+    // Converter para Buffers Node.js
+    const fontRegularData = Buffer.from(fontRegularArrayBuffer);
+    const fontBoldData = Buffer.from(fontBoldArrayBuffer);
+    const fontItalicData = Buffer.from(fontItalicArrayBuffer);
+    
+    console.log(`Fontes buscadas e convertidas para Buffer. Regular: ${fontRegularData.length} bytes, Bold: ${fontBoldData.length} bytes, Italic: ${fontItalicData.length} bytes.`);
 
     // Obter o estado e as páginas do ebook
     const [ebookState, pages] = await Promise.all([
@@ -93,8 +99,10 @@ export async function GET(
     doc.pipe(pdfStream);
 
     // Adicionar Título e Descrição (Usando buffers de fonte)
+    console.log("Setting font to Bold Buffer for title...");
     doc.font(fontBoldData).fontSize(24).text(ebookState.title, { align: 'center' });
     doc.moveDown(2);
+    console.log("Setting font to Regular Buffer for description...");
     doc.font(fontRegularData).fontSize(12).text(ebookState.description);
     doc.moveDown(3);
 
@@ -103,17 +111,21 @@ export async function GET(
       if (index > 0) {
         doc.addPage();
       }
+      console.log(`Page ${index}: Setting font to Bold Buffer for page title...`);
       doc.font(fontBoldData).fontSize(16).text(`Página ${page.pageIndex + 1}: ${page.pageTitle}`, { underline: true });
       doc.moveDown(1);
+      console.log(`Page ${index}: Setting font to Regular Buffer for page content...`);
       doc.font(fontRegularData).fontSize(11).text(page.content);
     });
 
     // Adicionar aviso se incompleto (Usando buffers de fonte)
      if (ebookState.status === "partial" || ebookState.status === "processing" || ebookState.status === "failed") {
         doc.addPage();
+        console.log("Setting font to Italic Buffer for warning...");
         doc.font(fontItalicData).fontSize(10).text(`AVISO: Este ebook pode estar incompleto. Status atual: ${ebookState.status}. Páginas completas: ${ebookState.completedPages}/${ebookState.totalPages}.`);
     }
 
+    console.log("Finalizing PDF document...");
     // Finalizar o PDF
     doc.end();
 
