@@ -11,12 +11,13 @@ function sanitizeFilename(filename: string): string {
   return filename.replace(/[^a-z0-9\.\-_]/gi, '_').replace(/\s+/g, '_');
 }
 
-// Caminhos para as fontes (relativo à raiz do projeto)
-const fontRegularPath = path.join(process.cwd(), 'lib', 'fonts', 'Roboto-Regular.ttf');
-const fontBoldPath = path.join(process.cwd(), 'lib', 'fonts', 'Roboto-Bold.ttf');
-const fontItalicPath = path.join(process.cwd(), 'lib', 'fonts', 'Roboto-Italic.ttf');
+// Caminhos para as fontes (agora dentro de public/)
+// process.cwd() ainda aponta para a raiz do projeto no ambiente Vercel
+const fontRegularPath = path.join(process.cwd(), 'public', 'fonts', 'Roboto-Regular.ttf');
+const fontBoldPath = path.join(process.cwd(), 'public', 'fonts', 'Roboto-Bold.ttf');
+const fontItalicPath = path.join(process.cwd(), 'public', 'fonts', 'Roboto-Italic.ttf');
 
-// Verificar se os arquivos de fonte existem (apenas para depuração, pode remover se causar problemas)
+// Verificar se os arquivos de fonte existem (mantido para depuração)
 try {
   if (!fs.existsSync(fontRegularPath)) console.warn(`Fonte Regular não encontrada em: ${fontRegularPath}`);
   if (!fs.existsSync(fontBoldPath)) console.warn(`Fonte Bold não encontrada em: ${fontBoldPath}`);
