@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { getEbookState, getEbookPages, EbookQueuePage } from "@/lib/redis";
-import PDFDocument from 'pdfkit';
-import { PassThrough } from 'stream';
+import puppeteer from 'puppeteer-core';
+import chromium from 'chrome-aws-lambda'; // Usar chrome-aws-lambda
 
 // Função auxiliar para sanitizar nomes de arquivos
 function sanitizeFilename(filename: string): string {
@@ -9,55 +9,58 @@ function sanitizeFilename(filename: string): string {
   return filename.replace(/[^a-z0-9\.\-_]/gi, '_').replace(/\s+/g, '_');
 }
 
+// Função para gerar o HTML do Ebook
+function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
+  let html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <title>${state.title}</title>
+      <style>
+        body { font-family: sans-serif; line-height: 1.6; margin: 40px; }
+        h1 { text-align: center; border-bottom: 1px solid #ccc; padding-bottom: 10px; margin-bottom: 30px; }
+        h2 { margin-top: 40px; border-bottom: 1px solid #eee; padding-bottom: 5px; page-break-before: always; }
+        h2:first-of-type { page-break-before: avoid; }
+        p.description { font-style: italic; margin-bottom: 40px; }
+        .page-content { margin-top: 15px; white-space: pre-wrap; } /* Preserve line breaks */
+        .warning { color: #888; font-style: italic; margin-top: 50px; border-top: 1px solid #ccc; padding-top: 10px; }
+      </style>
+    </head>
+    <body>
+      <h1>${state.title}</h1>
+      <p class="description">${state.description}</p>
+  `;
+
+  pages.forEach(page => {
+    html += `
+      <h2>Página ${page.pageIndex + 1}: ${page.pageTitle}</h2>
+      <div class="page-content">${page.content.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+    `; // Basic HTML escaping for content
+  });
+
+  if (state.status === "partial" || state.status === "processing" || state.status === "failed") {
+    html += `<p class="warning">AVISO: Este ebook pode estar incompleto. Status atual: ${state.status}. Páginas completas: ${state.completedPages}/${state.totalPages}.</p>`;
+  }
+
+  html += `
+    </body>
+    </html>
+  `;
+  return html;
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: { ebookId: string } }
 ) {
+  let browser = null;
   try {
     const ebookId = params.ebookId;
 
     if (!ebookId) {
       return NextResponse.json({ success: false, error: "Ebook ID is required" }, { status: 400 });
     }
-
-    // Obter a URL base da requisição para construir as URLs das fontes
-    const baseUrl = request.nextUrl.origin;
-    const fontRegularUrl = `${baseUrl}/fonts/Roboto-Regular.ttf`;
-    const fontBoldUrl = `${baseUrl}/fonts/Roboto-Bold.ttf`;
-    const fontItalicUrl = `${baseUrl}/fonts/Roboto-Italic.ttf`;
-
-    console.log(`Tentando buscar fontes de: ${fontRegularUrl}, ${fontBoldUrl}, ${fontItalicUrl}`);
-
-    // Buscar os dados das fontes
-    const [fontRegularResponse, fontBoldResponse, fontItalicResponse] = await Promise.all([
-      fetch(fontRegularUrl),
-      fetch(fontBoldUrl),
-      fetch(fontItalicUrl),
-    ]);
-
-    // Verificar se as fontes foram encontradas
-    if (!fontRegularResponse.ok || !fontBoldResponse.ok || !fontItalicResponse.ok) {
-      console.error("Falha ao buscar arquivos de fonte:", {
-         regular: fontRegularResponse.statusText,
-         bold: fontBoldResponse.statusText,
-         italic: fontItalicResponse.statusText
-      });
-      throw new Error("Não foi possível carregar os arquivos de fonte necessários para gerar o PDF.");
-    }
-
-    // Obter os dados das fontes como ArrayBuffer
-    const [fontRegularArrayBuffer, fontBoldArrayBuffer, fontItalicArrayBuffer] = await Promise.all([
-      fontRegularResponse.arrayBuffer(),
-      fontBoldResponse.arrayBuffer(),
-      fontItalicResponse.arrayBuffer(),
-    ]);
-    
-    // Converter para Buffers Node.js
-    const fontRegularData = Buffer.from(fontRegularArrayBuffer);
-    const fontBoldData = Buffer.from(fontBoldArrayBuffer);
-    const fontItalicData = Buffer.from(fontItalicArrayBuffer);
-    
-    console.log(`Fontes buscadas e convertidas para Buffer. Regular: ${fontRegularData.length} bytes, Bold: ${fontBoldData.length} bytes, Italic: ${fontItalicData.length} bytes.`);
 
     // Obter o estado e as páginas do ebook
     const [ebookState, pages] = await Promise.all([
@@ -90,74 +93,63 @@ export async function GET(
          return NextResponse.json({ success: false, error: "No completed pages found to download." }, { status: 400 });
     }
 
-    // --- Geração do PDF --- 
-    const doc = new PDFDocument({ bufferPages: true, size: 'A4', margin: 50 });
-    const buffers: Buffer[] = [];
+    console.log(`Gerando PDF para Ebook ${ebookId} com ${completedPages.length} páginas usando Puppeteer...`);
+
+    // Gerar o conteúdo HTML
+    const htmlContent = generateEbookHtml(ebookState, completedPages);
+
+    // Configurar Puppeteer
+    browser = await puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath,
+      headless: chromium.headless, // Usar 'new' para o novo modo headless
+    });
+
+    const page = await browser.newPage();
     
-    const pdfStream = new PassThrough();
-    pdfStream.on('data', (chunk) => buffers.push(chunk));
-    doc.pipe(pdfStream);
+    // Definir o conteúdo HTML na página
+    // Usar waitUntil: 'networkidle0' para garantir que fontes/estilos (se houver externos) carreguem
+    await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
 
-    // Adicionar Título e Descrição (Usando buffers de fonte)
-    console.log("Setting font to Bold Buffer for title...");
-    doc.font(fontBoldData).fontSize(24).text(ebookState.title, { align: 'center' });
-    doc.moveDown(2);
-    console.log("Setting font to Regular Buffer for description...");
-    doc.font(fontRegularData).fontSize(12).text(ebookState.description);
-    doc.moveDown(3);
-
-    // Adicionar Páginas do Ebook (Usando buffers de fonte)
-    completedPages.forEach((page, index) => {
-      if (index > 0) {
-        doc.addPage();
-      }
-      console.log(`Page ${index}: Setting font to Bold Buffer for page title...`);
-      doc.font(fontBoldData).fontSize(16).text(`Página ${page.pageIndex + 1}: ${page.pageTitle}`, { underline: true });
-      doc.moveDown(1);
-      console.log(`Page ${index}: Setting font to Regular Buffer for page content...`);
-      doc.font(fontRegularData).fontSize(11).text(page.content);
+    // Gerar o PDF
+    console.log("Gerando buffer PDF...");
+    const pdfBuffer = await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      margin: {
+        top: '50px',
+        right: '50px',
+        bottom: '50px',
+        left: '50px',
+      },
     });
+    console.log(`PDF gerado com sucesso. Tamanho: ${pdfBuffer.length} bytes`);
 
-    // Adicionar aviso se incompleto (Usando buffers de fonte)
-     if (ebookState.status === "partial" || ebookState.status === "processing" || ebookState.status === "failed") {
-        doc.addPage();
-        console.log("Setting font to Italic Buffer for warning...");
-        doc.font(fontItalicData).fontSize(10).text(`AVISO: Este ebook pode estar incompleto. Status atual: ${ebookState.status}. Páginas completas: ${ebookState.completedPages}/${ebookState.totalPages}.`);
-    }
+    await browser.close();
+    browser = null; // Marcar como fechado
 
-    console.log("Finalizing PDF document...");
-    // Finalizar o PDF
-    doc.end();
-
-    // Aguardar o stream terminar para ter todos os buffers
-    await new Promise<void>((resolve) => {
-        pdfStream.on('end', resolve);
-    });
-
-    // Combinar os buffers
-    const pdfBuffer = Buffer.concat(buffers);
-    // ------------------------
-
-    // Sanitizar o nome do arquivo e mudar extensão para .pdf
+    // --- Retornar o PDF --- 
     const filename = sanitizeFilename(ebookState.title || 'ebook') + ".pdf";
-
-    // Criar a resposta com o buffer do PDF e os cabeçalhos corretos
     const response = new NextResponse(pdfBuffer, {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
         'Content-Disposition': `attachment; filename="${filename}"`,
-        'Content-Length': pdfBuffer.length.toString(), // Adicionar Content-Length
+        'Content-Length': pdfBuffer.length.toString(),
       },
     });
-
     return response;
 
   } catch (error) {
-      console.error("Erro ao gerar PDF download:", error);
-      return NextResponse.json(
-        { success: false, error: error instanceof Error ? error.message : "Unknown error generating PDF download" },
-        { status: 500 }
-      );
+    console.error("Erro ao gerar PDF download com Puppeteer:", error);
+    if (browser) {
+      console.log("Fechando browser devido a erro...");
+      await browser.close(); // Garantir que o browser seja fechado em caso de erro
+    }
+    return NextResponse.json(
+      { success: false, error: error instanceof Error ? error.message : "Unknown error generating PDF download" },
+      { status: 500 }
+    );
   }
 } 
