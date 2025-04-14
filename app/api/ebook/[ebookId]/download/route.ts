@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { getEbookState, getEbookPages, EbookQueuePage } from "@/lib/redis";
 import puppeteer from 'puppeteer-core';
-import chromium from 'chrome-aws-lambda'; // Usar chrome-aws-lambda
+import chromium from '@sparticuz/chromium';
 
 // Função auxiliar para sanitizar nomes de arquivos
 function sanitizeFilename(filename: string): string {
@@ -93,23 +93,21 @@ export async function GET(
          return NextResponse.json({ success: false, error: "No completed pages found to download." }, { status: 400 });
     }
 
-    console.log(`Gerando PDF para Ebook ${ebookId} com ${completedPages.length} páginas usando Puppeteer...`);
+    console.log(`Gerando PDF para Ebook ${ebookId} com ${completedPages.length} páginas usando Puppeteer (@sparticuz/chromium)...`);
 
     // Gerar o conteúdo HTML
     const htmlContent = generateEbookHtml(ebookState, completedPages);
 
-    // Configurar Puppeteer
+    // Configurar Puppeteer com @sparticuz/chromium
+    // Não precisamos mais buscar as fontes, pois o Chromium as terá
     browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath,
-      headless: chromium.headless, // Usar 'new' para o novo modo headless
+      executablePath: await chromium.executablePath(), // Chamar a função
+      headless: chromium.headless, 
     });
 
     const page = await browser.newPage();
-    
-    // Definir o conteúdo HTML na página
-    // Usar waitUntil: 'networkidle0' para garantir que fontes/estilos (se houver externos) carreguem
     await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
 
     // Gerar o PDF
@@ -145,7 +143,7 @@ export async function GET(
     console.error("Erro ao gerar PDF download com Puppeteer:", error);
     if (browser) {
       console.log("Fechando browser devido a erro...");
-      await browser.close(); // Garantir que o browser seja fechado em caso de erro
+      await browser.close();
     }
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : "Unknown error generating PDF download" },
