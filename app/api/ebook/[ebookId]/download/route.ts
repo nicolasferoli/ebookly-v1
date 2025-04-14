@@ -59,28 +59,28 @@ export async function GET(
     pdfStream.on('data', (chunk) => buffers.push(chunk));
     doc.pipe(pdfStream);
 
-    // Adicionar Título e Descrição (sem .font() explícito)
-    doc.fontSize(24).text(ebookState.title, { align: 'center' });
+    // Adicionar Título e Descrição (Usando fontes padrão PDF)
+    doc.font('Helvetica-Bold').fontSize(24).text(ebookState.title, { align: 'center' });
     doc.moveDown(2);
-    doc.fontSize(12).text(ebookState.description);
+    doc.font('Helvetica').fontSize(12).text(ebookState.description);
     doc.moveDown(3);
 
-    // Adicionar Páginas do Ebook (sem .font() explícito)
+    // Adicionar Páginas do Ebook (Usando fontes padrão PDF)
     completedPages.forEach((page, index) => {
       if (index > 0) {
         doc.addPage();
       }
       // Título da Página
-      doc.fontSize(16).text(`Página ${page.pageIndex + 1}: ${page.pageTitle}`, { underline: true });
+      doc.font('Helvetica-Bold').fontSize(16).text(`Página ${page.pageIndex + 1}: ${page.pageTitle}`, { underline: true });
       doc.moveDown(1);
       // Conteúdo da Página
-      doc.fontSize(11).text(page.content);
+      doc.font('Helvetica').fontSize(11).text(page.content);
     });
 
-    // Adicionar aviso se incompleto (sem .font() explícito)
+    // Adicionar aviso se incompleto (Usando fontes padrão PDF)
      if (ebookState.status === "partial" || ebookState.status === "processing" || ebookState.status === "failed") {
         doc.addPage();
-        doc.fontSize(10).text(`AVISO: Este ebook pode estar incompleto. Status atual: ${ebookState.status}. Páginas completas: ${ebookState.completedPages}/${ebookState.totalPages}.`);
+        doc.font('Helvetica-Oblique').fontSize(10).text(`AVISO: Este ebook pode estar incompleto. Status atual: ${ebookState.status}. Páginas completas: ${ebookState.completedPages}/${ebookState.totalPages}.`);
     }
 
     // Finalizar o PDF
