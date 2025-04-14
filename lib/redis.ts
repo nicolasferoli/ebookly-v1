@@ -520,32 +520,55 @@ async function updateEbookState(ebookId: string): Promise<void> {
     }
 
     // Calcular o novo estado do ebook
-    const completedPages = pages.filter((page) => page.status === "completed").length
-    const processingPages = pages.filter((page) => page.status === "processing").length
-    const queuedPages = pages.filter((page) => page.status === "queued").length
-    const failedPages = pages.filter((page) => page.status === "failed").length
+    let completedCount = 0;
+    let processingCount = 0;
+    let queuedCount = 0;
+    let failedCount = 0;
+    const now = Date.now();
+    const PROCESSING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos
 
-    let ebookStatus: EbookQueueState["status"] = "processing"
+    pages.forEach((page) => {
+      if (page.status === "completed") {
+        completedCount++;
+      } else if (page.status === "processing") {
+        // Verificar timeout de processamento
+        if (now - page.updatedAt > PROCESSING_TIMEOUT_MS) {
+          console.warn(`Página ${page.pageIndex} do ebook ${ebookId} excedeu timeout de processamento. Marcando como falha.`);
+          // Idealmente, deveríamos chamar updatePageStatus aqui, mas isso criaria um loop.
+          // Por agora, apenas contamos como falha para o estado geral.
+          failedCount++;
+        } else {
+          processingCount++;
+        }
+      } else if (page.status === "queued") {
+        queuedCount++;
+      } else if (page.status === "failed") {
+        failedCount++;
+      }
+    });
 
-    if (failedPages === ebookState.totalPages) {
-      ebookStatus = "failed"
-    } else if (completedPages === ebookState.totalPages) {
-      ebookStatus = "completed"
-    } else if (queuedPages === ebookState.totalPages) {
-      ebookStatus = "queued"
-    } else if (completedPages + failedPages === ebookState.totalPages) {
-      ebookStatus = "partial"
+    let ebookStatus: EbookQueueState["status"] = "processing";
+
+    if (failedCount + completedCount === ebookState.totalPages) { // Inclui falhas por timeout
+      ebookStatus = failedCount > 0 ? "partial" : "completed"; // Se tem falhas, é parcial
+      if (failedCount === ebookState.totalPages) ebookStatus = "failed";
+    } else if (queuedCount === ebookState.totalPages) {
+      ebookStatus = "queued";
+    } else if (processingCount > 0 || queuedCount > 0) {
+       ebookStatus = "processing"; // Ainda processando ou esperando
     } else {
-      ebookStatus = "processing"
+      // Caso inesperado, talvez todas completas mas cálculo acima falhou?
+      console.warn("Estado inesperado ao calcular status do ebook", {completedCount, processingCount, queuedCount, failedCount, totalPages: ebookState.totalPages});
+      ebookStatus = "partial"; // Default seguro
     }
 
     // Atualizar o estado do ebook
-    ebookState.status = ebookStatus
-    ebookState.completedPages = completedPages
-    ebookState.processingPages = processingPages
-    ebookState.queuedPages = queuedPages
-    ebookState.failedPages = failedPages
-    ebookState.updatedAt = Date.now()
+    ebookState.status = ebookStatus;
+    ebookState.completedPages = completedCount;
+    ebookState.processingPages = processingCount;
+    ebookState.queuedPages = queuedCount;
+    ebookState.failedPages = failedCount; // Contagem agora inclui timeouts
+    ebookState.updatedAt = now;
 
     // Salvar o estado atualizado do ebook no Redis
     await client.set(`${EBOOK_PREFIX}${ebookId}`, JSON.stringify(ebookState))
