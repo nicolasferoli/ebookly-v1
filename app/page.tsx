@@ -727,46 +727,6 @@ export default function EbookGenerator() {
                 </Select>
               </div>
             </div>
-
-            <div className="border p-4 rounded-md">
-              <div className="flex items-start">
-                <div>
-                  <p className="text-sm mb-3">
-                    Antes de gerar o ebook, verifique se a conexão com o Redis está funcionando.
-                  </p>
-                  <Button variant="outline" size="sm" onClick={checkRedisConnection} disabled={isCheckingRedis}>
-                    {isCheckingRedis ? (
-                      <SimpleLoading text="Verificando Redis..." />
-                    ) : (
-                      <>
-                        <Database className="mr-2 h-4 w-4" />
-                        Verificar Conexão Redis
-                      </>
-                    )}
-                  </Button>
-                </div>
-              </div>
-
-              {redisStatus && (
-                <div className="mt-3">
-                  <p>Status do Redis: {redisStatus.connected ? "Conectado" : "Não conectado"}</p>
-
-                  {redisStatus.envInfo && (
-                    <div className="mt-2 text-xs text-muted-foreground">
-                      <p>Variáveis de ambiente:</p>
-                      <ul className="space-y-1 mt-1">
-                        {Object.entries(redisStatus.envInfo).map(([key, value]) => (
-                          <li key={key} className="flex justify-between">
-                            <span>{key}:</span>
-                            <span>{value}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
           </div>
         </CardContent>
         <CardFooter className="flex justify-between">
