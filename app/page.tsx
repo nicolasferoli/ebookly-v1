@@ -391,6 +391,8 @@ export default function EbookGenerator() {
       }
 
       setEbookDescription(data.description);
+      setCurrentStep(2);
+
     } catch (err) {
       console.error("Failed to generate description:", err);
       // Verificar se err é um Error antes de acessar message
