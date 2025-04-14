@@ -299,26 +299,52 @@ export async function getEbookPages(ebookId: string): Promise<EbookQueuePage[]> 
     const pageKeys = Array.from({ length: totalPages }, (_, i) => `${EBOOK_PAGE_PREFIX}${ebookId}:${i}`);
 
     // Usar MGET para buscar todas as chaves de uma vez
-    const results = await client.mget<string[]>(...pageKeys);
+    // Especificar <(string | EbookQueuePage | null)[]> para potencialmente lidar com objetos já parseados
+    const results = await client.mget<(string | EbookQueuePage | null)[]>(...pageKeys);
 
     const pages: EbookQueuePage[] = [];
     results.forEach((pageData, index) => {
-      if (pageData) {
-        try {
-          // Tentar fazer o parse de cada resultado não nulo
-          const parsedPage = JSON.parse(pageData) as EbookQueuePage;
-          // Verificar se tem as propriedades mínimas esperadas após parse
-          if (parsedPage.ebookId && typeof parsedPage.pageIndex === 'number' && parsedPage.pageTitle) {
-              pages.push(parsedPage);
-          } else {
-              console.warn(`Dados da página ${index} inválidos após parse:`, parsedPage)
-          }
-
-        } catch (parseError) {
-          console.error(`Erro ao fazer parse da página ${index} (chave ${pageKeys[index]}):`, parseError);
-        }
+      if (!pageData) {
+         // Ignorar resultados nulos (chave não existe)
+         return;
       }
-      // Ignorar resultados nulos (páginas não encontradas)
+
+      try {
+        let parsedPage: EbookQueuePage | null = null;
+
+        if (typeof pageData === 'object' && pageData !== null) {
+           // Dado já é um objeto - verificar se é válido
+           console.warn(`Dados da página ${index} (chave ${pageKeys[index]}) já eram um objeto.`);
+           if (pageData.ebookId && typeof pageData.pageIndex === 'number' && pageData.pageTitle) {
+               parsedPage = pageData as EbookQueuePage;
+           } else {
+               console.error(`Objeto retornado para página ${index} é inválido:`, pageData);
+           }
+        } else if (typeof pageData === 'string') {
+           // É uma string, verificar se é a string problemática
+           if (pageData === "[object Object]") {
+               console.error(`Erro: Recebido string literal \"[object Object]\" para página ${index} (chave ${pageKeys[index]})`);
+               return; // Pular entrada inválida
+           }
+           // Tentar fazer o parse
+           parsedPage = JSON.parse(pageData) as EbookQueuePage;
+        } else {
+           console.error(`Tipo de dado inesperado para página ${index}: ${typeof pageData}`);
+           return; // Pular
+        }
+
+        // Validar o objeto resultante (parseado ou direto)
+        if (parsedPage && parsedPage.ebookId && typeof parsedPage.pageIndex === 'number' && parsedPage.pageTitle) {
+            pages.push(parsedPage);
+        } else if (parsedPage) { // Logar se o objeto existe mas é inválido
+            console.warn(`Dados da página ${index} inválidos após parse/retrieval:`, parsedPage);
+        }
+        // Se parsedPage for null, o erro já foi logado acima
+
+      } catch (parseError) {
+        // Pegar erros apenas do JSON.parse
+        console.error(`Erro ao fazer parse da página ${index} (chave ${pageKeys[index]}):`, parseError, "Data String:", pageData);
+      }
     });
 
     // Ordenar pelo índice para garantir a ordem correta
