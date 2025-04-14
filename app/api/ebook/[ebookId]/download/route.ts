@@ -55,34 +55,32 @@ export async function GET(
     const doc = new PDFDocument({ bufferPages: true, size: 'A4', margin: 50 });
     const buffers: Buffer[] = [];
     
-    // Usar um PassThrough stream para coletar os buffers
     const pdfStream = new PassThrough();
     pdfStream.on('data', (chunk) => buffers.push(chunk));
     doc.pipe(pdfStream);
 
-    // Adicionar Título e Descrição
-    doc.fontSize(24).font('Helvetica-Bold').text(ebookState.title, { align: 'center' });
+    // Adicionar Título e Descrição (sem .font() explícito)
+    doc.fontSize(24).text(ebookState.title, { align: 'center' });
     doc.moveDown(2);
-    doc.fontSize(12).font('Helvetica').text(ebookState.description);
+    doc.fontSize(12).text(ebookState.description);
     doc.moveDown(3);
 
-    // Adicionar Páginas do Ebook
+    // Adicionar Páginas do Ebook (sem .font() explícito)
     completedPages.forEach((page, index) => {
-       // Adicionar quebra de página antes de cada nova página (exceto a primeira)
       if (index > 0) {
         doc.addPage();
       }
       // Título da Página
-      doc.fontSize(16).font('Helvetica-Bold').text(`Página ${page.pageIndex + 1}: ${page.pageTitle}`, { underline: true });
+      doc.fontSize(16).text(`Página ${page.pageIndex + 1}: ${page.pageTitle}`, { underline: true });
       doc.moveDown(1);
       // Conteúdo da Página
-      doc.fontSize(11).font('Helvetica').text(page.content);
+      doc.fontSize(11).text(page.content);
     });
 
-    // Adicionar aviso se incompleto
+    // Adicionar aviso se incompleto (sem .font() explícito)
      if (ebookState.status === "partial" || ebookState.status === "processing" || ebookState.status === "failed") {
         doc.addPage();
-        doc.fontSize(10).font('Helvetica-Oblique').text(`AVISO: Este ebook pode estar incompleto. Status atual: ${ebookState.status}. Páginas completas: ${ebookState.completedPages}/${ebookState.totalPages}.`);
+        doc.fontSize(10).text(`AVISO: Este ebook pode estar incompleto. Status atual: ${ebookState.status}. Páginas completas: ${ebookState.completedPages}/${ebookState.totalPages}.`);
     }
 
     // Finalizar o PDF
