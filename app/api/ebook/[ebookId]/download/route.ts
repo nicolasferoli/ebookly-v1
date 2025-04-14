@@ -1,5 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { getEbookState, getEbookPages, EbookQueuePage } from "@/lib/redis";
+import PDFDocument from 'pdfkit'; // Importar pdfkit
+import { PassThrough } from 'stream'; // Importar stream para buffer
 
 // Função auxiliar para sanitizar nomes de arquivos
 function sanitizeFilename(filename: string): string {
@@ -49,39 +51,71 @@ export async function GET(
          return NextResponse.json({ success: false, error: "No completed pages found to download." }, { status: 400 });
     }
 
-    // Montar o conteúdo do ebook
-    let ebookContent = `Título: ${ebookState.title}\n`;
-    ebookContent += `Descrição: ${ebookState.description}\n\n`;
-    ebookContent += `=====================================\n\n`;
-
-    completedPages.forEach((page) => {
-      ebookContent += `## Página ${page.pageIndex + 1}: ${page.pageTitle}\n\n`;
-      ebookContent += `${page.content}\n\n`;
-      ebookContent += `-------------------------------------\n\n`;
-    });
+    // --- Geração do PDF --- 
+    const doc = new PDFDocument({ bufferPages: true, size: 'A4', margin: 50 });
+    const buffers: Buffer[] = [];
     
-    if (ebookState.status === "partial" || ebookState.status === "processing" || ebookState.status === "failed") {
-        ebookContent += `\nAVISO: Este ebook pode estar incompleto. Status atual: ${ebookState.status}. Páginas completas: ${ebookState.completedPages}/${ebookState.totalPages}.\n`;
+    // Usar um PassThrough stream para coletar os buffers
+    const pdfStream = new PassThrough();
+    pdfStream.on('data', (chunk) => buffers.push(chunk));
+    doc.pipe(pdfStream);
+
+    // Adicionar Título e Descrição
+    doc.fontSize(24).font('Helvetica-Bold').text(ebookState.title, { align: 'center' });
+    doc.moveDown(2);
+    doc.fontSize(12).font('Helvetica').text(ebookState.description);
+    doc.moveDown(3);
+
+    // Adicionar Páginas do Ebook
+    completedPages.forEach((page, index) => {
+       // Adicionar quebra de página antes de cada nova página (exceto a primeira)
+      if (index > 0) {
+        doc.addPage();
+      }
+      // Título da Página
+      doc.fontSize(16).font('Helvetica-Bold').text(`Página ${page.pageIndex + 1}: ${page.pageTitle}`, { underline: true });
+      doc.moveDown(1);
+      // Conteúdo da Página
+      doc.fontSize(11).font('Helvetica').text(page.content);
+    });
+
+    // Adicionar aviso se incompleto
+     if (ebookState.status === "partial" || ebookState.status === "processing" || ebookState.status === "failed") {
+        doc.addPage();
+        doc.fontSize(10).font('Helvetica-Oblique').text(`AVISO: Este ebook pode estar incompleto. Status atual: ${ebookState.status}. Páginas completas: ${ebookState.completedPages}/${ebookState.totalPages}.`);
     }
 
-    // Sanitizar o nome do arquivo
-    const filename = sanitizeFilename(ebookState.title || 'ebook') + ".txt";
+    // Finalizar o PDF
+    doc.end();
 
-    // Criar a resposta com o conteúdo e os cabeçalhos corretos
-    const response = new NextResponse(ebookContent, {
+    // Aguardar o stream terminar para ter todos os buffers
+    await new Promise<void>((resolve) => {
+        pdfStream.on('end', resolve);
+    });
+
+    // Combinar os buffers
+    const pdfBuffer = Buffer.concat(buffers);
+    // ------------------------
+
+    // Sanitizar o nome do arquivo e mudar extensão para .pdf
+    const filename = sanitizeFilename(ebookState.title || 'ebook') + ".pdf";
+
+    // Criar a resposta com o buffer do PDF e os cabeçalhos corretos
+    const response = new NextResponse(pdfBuffer, {
       status: 200,
       headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Type': 'application/pdf',
         'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Length': pdfBuffer.length.toString(), // Adicionar Content-Length
       },
     });
 
     return response;
 
   } catch (error) {
-    console.error("Error generating download:", error);
+    console.error("Error generating PDF download:", error);
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : "Unknown error generating download" },
+      { success: false, error: error instanceof Error ? error.message : "Unknown error generating PDF download" },
       { status: 500 }
     );
   }
