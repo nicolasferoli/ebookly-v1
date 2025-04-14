@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { getNextQueueItem, updatePageStatus, getEbookState, getEbookPage } from "@/lib/redis"
+import { getNextQueueItem, updatePageStatus, getEbookState, getEbookPages } from "@/lib/redis"
 import { generateText } from "ai"
 import { openai } from "@ai-sdk/openai"
 
@@ -23,101 +23,123 @@ const CONTENT_MODES = {
   },
 }
 
-// Função para gerar o conteúdo de uma página
+// Função para gerar o conteúdo de uma página (atualizada para receber títulos)
 async function generatePageContent(
   ebookTitle: string,
   ebookDescription: string,
   pageTitle: string,
   pageIndex: number,
   contentMode: string,
+  allPageTitles: string[] // Novo parâmetro
 ): Promise<string> {
   try {
-    // Obter configurações do modo de conteúdo
-    const mode = CONTENT_MODES[contentMode as keyof typeof CONTENT_MODES] || CONTENT_MODES.MEDIUM
+    const mode = CONTENT_MODES[contentMode as keyof typeof CONTENT_MODES] || CONTENT_MODES.MEDIUM;
 
-    // Criar o prompt para a página
-    const prompt = `Você está escrevendo a página ${pageIndex + 1} de um ebook com o título "${ebookTitle}".
-    
-    Descrição do ebook: "${ebookDescription}"
-    
-    Título desta página: "${pageTitle}"
-    
-    Escreva o conteúdo desta página. O conteúdo deve:
-    1. Ser informativo e relevante
-    2. ${mode.promptSuffix}
-    3. Ser escrito em português do Brasil com linguagem clara
-    4. Estar diretamente relacionado ao título da página
-    
-    Escreva APENAS o conteúdo da página, sem incluir o título ou número da página.`
+    // Construir o sumário para o prompt
+    const tableOfContents = allPageTitles
+      .map((title, index) => `${index + 1}. ${title}${index === pageIndex ? " <-- VOCÊ ESTÁ AQUI" : ""}`)
+      .join("\n");
 
+    // Criar o prompt atualizado
+    const prompt = `Você é um escritor especialista criando o conteúdo para um ebook.
+    Título do Ebook: "${ebookTitle}"
+    Descrição: "${ebookDescription}"
+
+    Sumário Completo:
+    ${tableOfContents}
+
+    Sua tarefa é escrever o conteúdo APENAS para a Página ${pageIndex + 1}, cujo título é "${pageTitle}".
+
+    Instruções importantes:
+    1. Considere o contexto geral do ebook fornecido pelo sumário.
+    2. Foque estritamente no tópico definido pelo título desta página ("${pageTitle}").
+    3. Evite repetir informações que provavelmente foram abordadas em páginas anteriores ou serão abordadas em páginas futuras, use o sumário como guia.
+    4. ${mode.promptSuffix}
+    5. Escreva em português do Brasil com linguagem clara e envolvente.
+    6. NÃO inclua o título da página ou o número da página no conteúdo que você escrever. Apenas o texto da página.
+    7. NÃO escreva introduções ou conclusões genéricas para esta página; vá direto ao ponto do título.
+    
+    Conteúdo da Página ${pageIndex + 1}:`;
+
+    console.log(`Gerando conteúdo para página ${pageIndex + 1} com prompt contextualizado.`);
     // Gerar o conteúdo
     const { text } = await generateText({
       model: openai("gpt-4o"),
       prompt,
-      maxTokens: mode.maxTokens,
-    })
+      maxTokens: mode.maxTokens + 50, // Um pouco mais de folga para prompts maiores
+    });
 
-    return text
+    return text;
   } catch (error) {
-    console.error("Error generating page content:", error)
-    throw new Error(`Failed to generate content: ${error instanceof Error ? error.message : "Unknown error"}`)
+    console.error(`Error generating page content for page ${pageIndex}:`, error);
+    throw new Error(`Failed to generate content: ${error instanceof Error ? error.message : "Unknown error"}`);
   }
 }
 
-// Função para processar um item da fila
+// Função para processar um item da fila (atualizada)
 async function processQueueItem(item: { ebookId: string; pageIndex: number }): Promise<boolean> {
   try {
-    const { ebookId, pageIndex } = item
+    const { ebookId, pageIndex } = item;
 
-    // Obter o estado do ebook E os detalhes da página específica
-    const [ebookState, pageData] = await Promise.all([
+    // Obter o estado do ebook E TODAS as páginas para pegar os títulos
+    const [ebookState, allPages] = await Promise.all([
         getEbookState(ebookId),
-        getEbookPage(ebookId, pageIndex) // Usar a nova função
+        getEbookPages(ebookId) // Buscar todas as páginas
     ]);
 
     if (!ebookState) {
-      console.error(`Ebook ${ebookId} not found for page ${pageIndex}`)
-      // Não podemos atualizar o status se o ebook não existe
-      return false
+      console.error(`Ebook ${ebookId} not found for page ${pageIndex}`);
+      return false;
     }
-    if (!pageData) {
-      console.error(`Page data not found for ebook ${ebookId}, page ${pageIndex}`)
-       // Tentar marcar como falha se o estado do ebook existir
-      await updatePageStatus(ebookId, pageIndex, "failed", "", "Page data not found in Redis")
-      return false
+    // Verificar se allPages é um array e não está vazio
+    if (!Array.isArray(allPages) || allPages.length === 0) {
+       console.error(`Page data not found or invalid for ebook ${ebookId}`);
+       await updatePageStatus(ebookId, pageIndex, "failed", "", "Page data not found or invalid in Redis");
+       return false;
     }
+
+    // Encontrar os dados da página atual na lista
+    const currentPageData = allPages.find(p => p.pageIndex === pageIndex);
+    if (!currentPageData) {
+      console.error(`Current page data (${pageIndex}) not found in list for ebook ${ebookId}`);
+       await updatePageStatus(ebookId, pageIndex, "failed", "", "Current page data not found in list");
+       return false;
+    }
+
+    // Extrair todos os títulos ordenados
+    const allPageTitles = allPages
+                           .sort((a, b) => a.pageIndex - b.pageIndex)
+                           .map(p => p.pageTitle);
 
     // Marcar a página como em processamento
-    await updatePageStatus(ebookId, pageIndex, "processing")
+    await updatePageStatus(ebookId, pageIndex, "processing");
 
-    // Usar o título real da página obtido do Redis
-    const pageTitle = pageData.pageTitle
-
-    // Gerar o conteúdo da página
+    // Gerar o conteúdo da página, passando a lista de títulos
     const content = await generatePageContent(
       ebookState.title,
       ebookState.description,
-      pageTitle, // <- Título real aqui
+      currentPageData.pageTitle, // Usar o título real da página atual
       pageIndex,
       ebookState.contentMode,
-    )
+      allPageTitles // Passar todos os títulos
+    );
 
     // Marcar a página como concluída
-    await updatePageStatus(ebookId, pageIndex, "completed", content)
+    await updatePageStatus(ebookId, pageIndex, "completed", content);
 
-    return true
+    return true;
   } catch (error) {
-    console.error("Error processing queue item:", error)
+    console.error(`Error processing queue item ${item.ebookId}-${item.pageIndex}:`, error);
 
     // Marcar a página como falha
     try {
-      const { ebookId, pageIndex } = item
-      await updatePageStatus(ebookId, pageIndex, "failed", "", error instanceof Error ? error.message : "Unknown error")
+      const { ebookId, pageIndex } = item;
+      await updatePageStatus(ebookId, pageIndex, "failed", "", error instanceof Error ? error.message : "Unknown error");
     } catch (updateError) {
-      console.error("Error updating page status:", updateError)
+      console.error("Error updating page status after failure:", updateError);
     }
 
-    return false
+    return false;
   }
 }
 
