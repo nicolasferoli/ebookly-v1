@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { BookText, Download, AlertCircle, ArrowRight, Database, RefreshCw, Library } from "lucide-react"
-import { generateEbookDescription, getContentModes, getCurrentContentMode } from "@/lib/ebook-generator"
+import { getContentModes, getCurrentContentMode } from "@/lib/ebook-generator"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { EbookQueueState } from "@/lib/redis"
@@ -198,57 +198,45 @@ export default function EbookGenerator() {
         let data
         try {
           data = await response.json()
-        } catch (jsonError) {
-          throw new Error(`Invalid JSON response: ${jsonError instanceof Error ? jsonError.message : "Unknown error"}`)
+        } catch (parseError) {
+          console.error("Error parsing ebook status JSON:", parseError)
+          // Verificar se parseError é um Error antes de acessar message
+          const errorMsg = parseError instanceof Error ? parseError.message : String(parseError)
+          throw new Error(`Failed to parse ebook status: ${errorMsg}`)
         }
 
-        if (data.success) {
-          if (data.state) {
-            setEbookState(data.state)
-          } else {
-            console.warn("Resposta não contém dados do estado do ebook")
-          }
+        // Atualizar o estado
+        setEbookState(data.state)
+        setEbookPages(data.pages || []) // Garantir que pages seja sempre um array
 
-          // Verificar se temos páginas
-          if (data.pages && Array.isArray(data.pages)) {
-            setEbookPages(data.pages)
-          } else if (data.pagesError) {
-            console.warn("Erro ao carregar páginas:", data.pagesError)
-            // Não atualizar as páginas se houver erro
-          }
-
-          // Se o ebook estiver concluído ou com falha, parar o polling
-          if (
-            data.state &&
-            (data.state.status === "completed" || data.state.status === "failed" || data.state.status === "partial")
-          ) {
-            stopPolling()
-
-            // Se estiver no passo 3, avançar para o passo 4
-            if (currentStep === 3) {
+        // Parar o polling se o estado for final
+        if (data.state.status === "completed" || data.state.status === "failed") {
+          stopPolling()
+          // Se completou, avançar para o passo 4
+          if (data.state.status === "completed") {
               setCurrentStep(4)
-            }
+              setSelectedPageIndex(0) // Selecionar a primeira página por padrão
           }
-        } else {
-          throw new Error(data.error || "Unknown error")
-        }
-      } catch (fetchError) {
-        // Se for um erro de timeout, tentar novamente mais tarde
-        if (fetchError.name === "AbortError") {
-          console.warn("Timeout ao atualizar status do ebook, tentando novamente mais tarde")
-          return // Não lançar erro para não interromper o polling
         }
 
-        throw fetchError
+      } catch (fetchError) {
+        // Verificar se fetchError é um Error antes de acessar message
+        if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+          console.warn('Fetch aborted (timeout)');
+          setError("Timeout ao buscar status do ebook. Verifique sua conexão ou tente novamente.");
+        } else {
+           console.error("Error fetching ebook status:", fetchError);
+           const errorMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
+           setError(`Erro ao buscar status do ebook: ${errorMsg}`);
+        }
+        // Parar o polling em caso de erro de fetch também?
+        // stopPolling();
       }
     } catch (error) {
-      console.error("Error updating ebook status:", error)
-      setError(error instanceof Error ? error.message : "Erro ao atualizar status do ebook")
-
-      // Se o erro persistir por muito tempo, podemos parar o polling
-      if (error.message && error.message.includes("Ebook not found") && currentStep === 3) {
-        stopPolling()
-      }
+      console.error("Unhandled error in updateEbookStatus:", error)
+      // Verificar se error é um Error antes de acessar message
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      setError(`Erro inesperado ao atualizar status: ${errorMsg}`)
     }
   }
 
@@ -291,13 +279,15 @@ export default function EbookGenerator() {
         }
       } catch (fetchError) {
         // Se for um erro de timeout, informar
-        if (fetchError.name === "AbortError") {
+        if (fetchError instanceof Error && fetchError.name === "AbortError") {
           console.warn("Timeout ao iniciar worker, tentando novamente...")
           // Tentar novamente com menos páginas
           return startWorker(Math.max(1, Math.floor(count / 2)))
         }
 
-        throw fetchError
+        // Adicionar log para outros erros de fetch antes de relançar
+        console.error("Fetch error in startWorker:", fetchError); 
+        throw fetchError // Relançar para ser pego pelo catch externo
       }
     } catch (error) {
       console.error("Error starting worker:", error)
@@ -305,7 +295,7 @@ export default function EbookGenerator() {
     }
   }
 
-  // Função para verificar a conexão com o Redis com melhor tratamento de erros
+  // Função para verificar a conexão com o Redis
   const checkRedisConnection = async () => {
     setIsCheckingRedis(true)
     setError(null)
@@ -364,42 +354,61 @@ export default function EbookGenerator() {
           setError((prev) => `${prev}\n\n${data.helpMessage}`)
         }
       }
-    } catch (error) {
-      console.error("Error checking Redis connection:", error)
-
-      // Verificar se é um erro de timeout
-      if (error.name === "AbortError") {
-        setError("Timeout ao verificar conexão com o Redis. O servidor pode estar sobrecarregado ou indisponível.")
-      } else {
-        setError(
-          `Erro ao verificar conexão com o Redis: ${error instanceof Error ? error.message : "Erro desconhecido"}`,
-        )
-      }
-
-      setRedisStatus(null)
+    } catch (fetchError) {
+      console.error("Error fetching redis status:", fetchError);
+      // Verificar se fetchError é um Error antes de acessar message
+      const errorMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
+      setError(`Erro ao verificar Redis: ${errorMsg}`);
+      setRedisStatus({ connected: false, redisUrl: "N/A", redisToken: "N/A", helpMessage: `Erro: ${errorMsg}` });
     } finally {
       setIsCheckingRedis(false)
     }
   }
 
+  // Função para gerar a descrição (atualizada)
   const handleGenerateDescription = async () => {
-    if (!ebookTitle.trim()) return
-
-    setError(null)
-    setIsGeneratingDescription(true)
+    if (!ebookTitle) {
+      setError("Por favor, insira um título para o ebook primeiro.");
+      return;
+    }
+    setIsGeneratingDescription(true);
+    setError(null);
 
     try {
-      const description = await generateEbookDescription(ebookTitle)
-      setEbookDescription(description)
-      // Avançar para o próximo passo automaticamente
-      setCurrentStep(2)
-    } catch (error) {
-      console.error("Failed to generate description:", error)
-      setError(error instanceof Error ? error.message : "Erro ao gerar a descrição do ebook.")
+      // Chamar a nova API
+      const response = await fetch("/api/generate-description", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ title: ebookTitle }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || "Falha ao gerar descrição na API.");
+      }
+
+      setEbookDescription(data.description);
+    } catch (err) {
+      console.error("Failed to generate description:", err);
+      // Verificar se err é um Error antes de acessar message
+      const message = err instanceof Error ? err.message : String(err);
+      // Verificar se a mensagem já inclui o erro específico da chave API
+      if (message.includes("OpenAI API key is missing")) {
+         setError("Erro de configuração: Chave da API OpenAI não encontrada no servidor. Verifique as variáveis de ambiente na Vercel e faça redeploy.");
+      } else if (message.includes("Não foi possível gerar a descrição")) {
+         // Usar a mensagem de erro vinda da API que já é informativa
+         setError(message);
+      } else {
+         setError(`Erro ao gerar descrição: ${message}`);
+      }
+      setEbookDescription(""); // Limpar descrição em caso de erro
     } finally {
-      setIsGeneratingDescription(false)
+      setIsGeneratingDescription(false);
     }
-  }
+  };
 
   // Atualizar a função handleGenerateFullEbook para incluir o número de páginas
   const handleGenerateFullEbook = async () => {
