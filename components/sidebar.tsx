@@ -67,8 +67,10 @@ export function Sidebar() {
                   key={link.href}
                   href={link.href}
                   className={cn(
-                    "flex items-center gap-3 px-3 py-2 rounded-md text-sm",
-                    isActive ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                    "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
+                    isActive
+                      ? "bg-[--sidebar-primary] text-[--sidebar-primary-foreground] font-medium"
+                      : "text-[--sidebar-foreground] hover:bg-[--sidebar-accent] hover:text-[--sidebar-accent-foreground]",
                   )}
                 >
                   <Icon className="h-4 w-4" />

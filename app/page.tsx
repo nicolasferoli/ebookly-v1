@@ -636,14 +636,14 @@ export default function EbookGenerator() {
   // Renderizar o passo 1: Nome do Ebook
   const renderStep1 = () => {
     return (
-      <Card className="border-0 shadow-sm">
+      <Card className="shadow-sm">
         <CardHeader>
           <CardTitle>Nome do Ebook</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="ebook-title">Título do Ebook</Label>
+              <Label htmlFor="ebook-title" className="font-medium">Título do Ebook</Label>
               <Input
                 id="ebook-title"
                 placeholder="Ex: Guia Completo de Marketing Digital"
@@ -676,14 +676,14 @@ export default function EbookGenerator() {
   // Renderizar o passo 2: Descrição do Ebook
   const renderStep2 = () => {
     return (
-      <Card className="border-0 shadow-sm">
+      <Card className="shadow-sm">
         <CardHeader>
           <CardTitle>Configuração do Ebook</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-6">
             <div className="space-y-2">
-              <Label htmlFor="ebook-description">Descrição do Ebook</Label>
+              <Label htmlFor="ebook-description" className="font-medium">Descrição do Ebook</Label>
               <Textarea
                 id="ebook-description"
                 className="min-h-[150px]"
@@ -696,7 +696,7 @@ export default function EbookGenerator() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Seletor de quantidade de páginas */}
               <div className="space-y-2">
-                <Label htmlFor="page-count">Quantidade de Páginas</Label>
+                <Label htmlFor="page-count" className="font-medium">Quantidade de Páginas</Label>
                 <Select value={pageCount.toString()} onValueChange={(value) => setPageCount(Number(value))}>
                   <SelectTrigger id="page-count">
                     <SelectValue placeholder="Selecione a quantidade de páginas" />
@@ -713,7 +713,7 @@ export default function EbookGenerator() {
 
               {/* Seletor de densidade de conteúdo */}
               <div className="space-y-2">
-                <Label htmlFor="content-mode">Densidade de Conteúdo</Label>
+                <Label htmlFor="content-mode" className="font-medium">Densidade de Conteúdo</Label>
                 <Select value={contentMode} onValueChange={setContentMode}>
                   <SelectTrigger id="content-mode">
                     <SelectValue placeholder="Selecione a densidade de conteúdo" />
@@ -794,7 +794,7 @@ export default function EbookGenerator() {
     const pages = preparePageData()
 
     return (
-      <Card className="border-0 shadow-sm">
+      <Card className="shadow-sm">
         <CardHeader>
           <CardTitle>Gerando seu Ebook</CardTitle>
         </CardHeader>
@@ -850,7 +850,7 @@ export default function EbookGenerator() {
     const pages = preparePageData()
 
     return (
-      <Card className="border-0 shadow-sm">
+      <Card className="shadow-sm">
         <CardHeader>
           <CardTitle>
             {ebookState?.status === "completed"
