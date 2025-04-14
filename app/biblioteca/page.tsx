@@ -65,33 +65,21 @@ export default function BibliotecaPage() {
       ebook.description.toLowerCase().includes(searchTerm.toLowerCase()),
   )
 
-  // Função para baixar um ebook
+  // Função para baixar um ebook (ATUALIZADA PARA USAR A API PDF)
   const handleDownloadEbook = (ebook: EbookInLibrary) => {
-    if (!ebook || !ebook.pages || ebook.pages.length === 0) return
+    console.log("handleDownloadEbook (from Library) called. Ebook ID:", ebook.id);
 
-    // Ordenar as páginas por índice
-    const sortedPages = [...ebook.pages].sort((a, b) => a.index - b.index)
+    if (!ebook.id) {
+      alert("Erro: Não foi possível obter o ID deste ebook para download.");
+      return;
+    }
+    
+    // Construir a URL de download da API
+    const downloadUrl = `/api/ebook/${ebook.id}/download`;
+    console.log("Attempting to download PDF from:", downloadUrl);
 
-    // Criar o texto do ebook
-    const ebookText = [
-      `# ${ebook.title}`,
-      ebook.description,
-      ...sortedPages.map((page, index) => {
-        const pageNumber = index + 1
-        return `## Página ${pageNumber}: ${ebook.title} - Parte ${pageNumber}\n\n${page.content}`
-      }),
-    ].join("\n\n")
-
-    // Criar e baixar o arquivo
-    const blob = new Blob([ebookText], { type: "text/plain" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `${ebook.title.replace(/\s+/g, "-").toLowerCase()}.txt`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
+    // Iniciar o download redirecionando o navegador
+    window.location.href = downloadUrl;
   }
 
   // Função para excluir um ebook
