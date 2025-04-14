@@ -1,29 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { getEbookState, getEbookPages, EbookQueuePage } from "@/lib/redis";
-import PDFDocument from 'pdfkit'; // Importar pdfkit
-import { PassThrough } from 'stream'; // Importar stream para buffer
-import path from 'path'; // Importar path para construir caminhos
-import fs from 'fs'; // Importar fs para verificar se o arquivo existe (opcional, mas bom)
+import PDFDocument from 'pdfkit';
+import { PassThrough } from 'stream';
 
 // Função auxiliar para sanitizar nomes de arquivos
 function sanitizeFilename(filename: string): string {
   // Remover caracteres inválidos e substituir espaços
   return filename.replace(/[^a-z0-9\.\-_]/gi, '_').replace(/\s+/g, '_');
-}
-
-// Caminhos para as fontes (agora dentro de public/)
-// process.cwd() ainda aponta para a raiz do projeto no ambiente Vercel
-const fontRegularPath = path.join(process.cwd(), 'public', 'fonts', 'Roboto-Regular.ttf');
-const fontBoldPath = path.join(process.cwd(), 'public', 'fonts', 'Roboto-Bold.ttf');
-const fontItalicPath = path.join(process.cwd(), 'public', 'fonts', 'Roboto-Italic.ttf');
-
-// Verificar se os arquivos de fonte existem (mantido para depuração)
-try {
-  if (!fs.existsSync(fontRegularPath)) console.warn(`Fonte Regular não encontrada em: ${fontRegularPath}`);
-  if (!fs.existsSync(fontBoldPath)) console.warn(`Fonte Bold não encontrada em: ${fontBoldPath}`);
-  if (!fs.existsSync(fontItalicPath)) console.warn(`Fonte Italic não encontrada em: ${fontItalicPath}`);
-} catch (err) {
-   console.error("Erro ao verificar arquivos de fonte:", err);
 }
 
 export async function GET(
@@ -36,6 +19,39 @@ export async function GET(
     if (!ebookId) {
       return NextResponse.json({ success: false, error: "Ebook ID is required" }, { status: 400 });
     }
+
+    // Obter a URL base da requisição para construir as URLs das fontes
+    const baseUrl = request.nextUrl.origin;
+    const fontRegularUrl = `${baseUrl}/fonts/Roboto-Regular.ttf`;
+    const fontBoldUrl = `${baseUrl}/fonts/Roboto-Bold.ttf`;
+    const fontItalicUrl = `${baseUrl}/fonts/Roboto-Italic.ttf`;
+
+    console.log(`Tentando buscar fontes de: ${fontRegularUrl}, ${fontBoldUrl}, ${fontItalicUrl}`);
+
+    // Buscar os dados das fontes
+    const [fontRegularResponse, fontBoldResponse, fontItalicResponse] = await Promise.all([
+      fetch(fontRegularUrl),
+      fetch(fontBoldUrl),
+      fetch(fontItalicUrl),
+    ]);
+
+    // Verificar se as fontes foram encontradas
+    if (!fontRegularResponse.ok || !fontBoldResponse.ok || !fontItalicResponse.ok) {
+      console.error("Falha ao buscar arquivos de fonte:", {
+         regular: fontRegularResponse.statusText,
+         bold: fontBoldResponse.statusText,
+         italic: fontItalicResponse.statusText
+      });
+      throw new Error("Não foi possível carregar os arquivos de fonte necessários para gerar o PDF.");
+    }
+
+    // Obter os dados das fontes como ArrayBuffer
+    const [fontRegularData, fontBoldData, fontItalicData] = await Promise.all([
+      fontRegularResponse.arrayBuffer(),
+      fontBoldResponse.arrayBuffer(),
+      fontItalicResponse.arrayBuffer(),
+    ]);
+    console.log("Fontes buscadas com sucesso.");
 
     // Obter o estado e as páginas do ebook
     const [ebookState, pages] = await Promise.all([
@@ -76,33 +92,26 @@ export async function GET(
     pdfStream.on('data', (chunk) => buffers.push(chunk));
     doc.pipe(pdfStream);
 
-    // Registrar fontes (opcional, mas pode ajudar se caminhos estiverem corretos)
-    // doc.registerFont('Roboto-Regular', fontRegularPath);
-    // doc.registerFont('Roboto-Bold', fontBoldPath);
-    // doc.registerFont('Roboto-Italic', fontItalicPath);
-
-    // Adicionar Título e Descrição (Usando arquivos de fonte locais)
-    doc.font(fontBoldPath).fontSize(24).text(ebookState.title, { align: 'center' });
+    // Adicionar Título e Descrição (Usando buffers de fonte)
+    doc.font(fontBoldData).fontSize(24).text(ebookState.title, { align: 'center' });
     doc.moveDown(2);
-    doc.font(fontRegularPath).fontSize(12).text(ebookState.description);
+    doc.font(fontRegularData).fontSize(12).text(ebookState.description);
     doc.moveDown(3);
 
-    // Adicionar Páginas do Ebook (Usando arquivos de fonte locais)
+    // Adicionar Páginas do Ebook (Usando buffers de fonte)
     completedPages.forEach((page, index) => {
       if (index > 0) {
         doc.addPage();
       }
-      // Título da Página
-      doc.font(fontBoldPath).fontSize(16).text(`Página ${page.pageIndex + 1}: ${page.pageTitle}`, { underline: true });
+      doc.font(fontBoldData).fontSize(16).text(`Página ${page.pageIndex + 1}: ${page.pageTitle}`, { underline: true });
       doc.moveDown(1);
-      // Conteúdo da Página
-      doc.font(fontRegularPath).fontSize(11).text(page.content);
+      doc.font(fontRegularData).fontSize(11).text(page.content);
     });
 
-    // Adicionar aviso se incompleto (Usando arquivos de fonte locais)
+    // Adicionar aviso se incompleto (Usando buffers de fonte)
      if (ebookState.status === "partial" || ebookState.status === "processing" || ebookState.status === "failed") {
         doc.addPage();
-        doc.font(fontItalicPath).fontSize(10).text(`AVISO: Este ebook pode estar incompleto. Status atual: ${ebookState.status}. Páginas completas: ${ebookState.completedPages}/${ebookState.totalPages}.`);
+        doc.font(fontItalicData).fontSize(10).text(`AVISO: Este ebook pode estar incompleto. Status atual: ${ebookState.status}. Páginas completas: ${ebookState.completedPages}/${ebookState.totalPages}.`);
     }
 
     // Finalizar o PDF
@@ -133,12 +142,7 @@ export async function GET(
     return response;
 
   } catch (error) {
-      // Logar erro com mais detalhes, incluindo se foi erro de fonte
-      if (error instanceof Error && error.message.includes('ENOENT') && (error.message.includes('.ttf') || error.message.includes('.afm'))) {
-           console.error("Erro ao gerar PDF - Problema ao carregar arquivo de fonte:", error);
-      } else {
-           console.error("Erro ao gerar PDF download:", error);
-      }
+      console.error("Erro ao gerar PDF download:", error);
       return NextResponse.json(
         { success: false, error: error instanceof Error ? error.message : "Unknown error generating PDF download" },
         { status: 500 }
