@@ -11,6 +11,16 @@ function sanitizeFilename(filename: string): string {
 
 // Função para gerar o HTML do Ebook
 function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
+  // Helper para escapar HTML e converter markdown bold
+  const formatContent = (content: string): string => {
+    if (!content) return "";
+    // 1. Substituir **texto** por <strong>texto</strong>
+    let formatted = content.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
+    // 2. Escapar < e >
+    formatted = formatted.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return formatted;
+  };
+
   let html = `
     <!DOCTYPE html>
     <html>
@@ -19,14 +29,55 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
       <title>${state.title}</title>
       <style>
         body { font-family: sans-serif; line-height: 1.6; margin: 40px; }
-        h1 { text-align: center; border-bottom: 1px solid #ccc; padding-bottom: 10px; margin-bottom: 30px; }
+        h1 { text-align: center; margin-bottom: 10px; }
         h2 { margin-top: 40px; border-bottom: 1px solid #eee; padding-bottom: 5px; page-break-before: always; }
-        h2:first-of-type { page-break-before: avoid; }
-        p.description { font-style: italic; margin-bottom: 40px; }
+        /* Evitar quebra antes do H2 da primeira página de conteúdo real */
+        .content-start h2:first-of-type { page-break-before: avoid; }
+        p.description { font-style: italic; margin-bottom: 20px; text-align: center; }
         .page-content { margin-top: 15px; white-space: pre-wrap; } /* Preserve line breaks */
         .warning { color: #888; font-style: italic; margin-top: 50px; border-top: 1px solid #ccc; padding-top: 10px; }
+        
+        /* Estilos da Capa */
+        .cover-page {
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          align-items: center;
+          min-height: 80vh; /* Ocupar maior parte da página */
+          text-align: center;
+          page-break-after: always; /* Quebrar página após a capa */
+          border: none; /* Remover borda do H1 padrão */
+        }
+        .cover-page h1 {
+          font-size: 2.5em;
+          border-bottom: none;
+          margin-bottom: 20px;
+        }
+        .cover-page .description {
+          font-size: 1.1em;
+          max-width: 80%;
+        }
 
-        /* Adiciona números de página no rodapé */
+        /* Estilos do Sumário */
+        .toc-page {
+          page-break-after: always; /* Quebrar página após o sumário */
+        }
+        .toc-page h2 {
+          text-align: center;
+          page-break-before: avoid; /* Não quebrar antes do título do sumário */
+          margin-bottom: 20px;
+          border-bottom: 1px solid #ccc;
+        }
+        .toc-list {
+          list-style: none;
+          padding: 0;
+          margin: 0;
+        }
+        .toc-list li {
+          margin-bottom: 8px;
+        }
+
+        /* Números de página no rodapé (excluir da capa e sumário talvez?) */
         @page {
           @bottom-center {
             content: counter(page);
@@ -34,20 +85,38 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
             color: #888;
           }
         }
+        /* Opcional: Tentar remover número da primeira página (capa) 
+           @page :first {
+             @bottom-center { content: normal; }
+           }
+        */
       </style>
     </head>
     <body>
-      <h1>${state.title}</h1>
-      <p class="description">${state.description}</p>
+      {/* --- Página de Capa --- */}
+      <div class="cover-page">
+        <h1>${state.title}</h1>
+        <p class="description">${state.description}</p>
+      </div>
+
+      {/* --- Página de Sumário (sem números de página por enquanto) --- */}
+      <div class="toc-page">
+        <h2>Sumário</h2>
+        <ul class="toc-list">
+          ${pages.map(page => `<li>${page.pageTitle}</li>`).join('')}
+        </ul>
+      </div>
+
+      {/* --- Conteúdo do Ebook --- */}
+      <div class="content-start"> {/* Marcador para CSS */}
+        ${pages.map(page => `
+          <h2>${page.pageTitle}</h2> {/* Removido "Página X:" */} 
+          <div class="page-content">${formatContent(page.content)}</div> {/* Aplicar formatação */}
+        `).join('')}
+      </div>
   `;
 
-  pages.forEach(page => {
-    html += `
-      <h2>Página ${page.pageIndex + 1}: ${page.pageTitle}</h2>
-      <div class="page-content">${page.content.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
-    `; // Basic HTML escaping for content
-  });
-
+  // Aviso de ebook incompleto (colocado no final do corpo HTML)
   if (state.status === "partial" || state.status === "processing" || state.status === "failed") {
     html += `<p class="warning">AVISO: Este ebook pode estar incompleto. Status atual: ${state.status}. Páginas completas: ${state.completedPages}/${state.totalPages}.</p>`;
   }
