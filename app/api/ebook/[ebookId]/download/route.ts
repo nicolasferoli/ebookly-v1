@@ -1,3 +1,4 @@
+
 import { type NextRequest, NextResponse } from "next/server";
 import { getEbookState, getEbookPages, EbookQueuePage } from "@/lib/redis";
 import puppeteer from 'puppeteer-core';
@@ -28,9 +29,47 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
       <meta charset="UTF-8">
       <title>${state.title}</title>
       <style>
-        body { font-family: sans-serif; line-height: 1.6; margin: 40px; }
-        h1 { text-align: center; margin-bottom: 10px; }
-        h2 { margin-top: 40px; border-bottom: 1px solid #eee; padding-bottom: 5px; page-break-before: always; }
+        /* Importar fontes Roboto */
+        @font-face {
+          font-family: 'Roboto';
+          font-style: normal;
+          font-weight: 400;
+          src: url('/fonts/Roboto-Regular.ttf') format('truetype');
+        }
+        @font-face {
+          font-family: 'Roboto';
+          font-style: italic;
+          font-weight: 400;
+          src: url('/fonts/Roboto-Italic.ttf') format('truetype');
+        }
+        @font-face {
+          font-family: 'Roboto';
+          font-style: normal;
+          font-weight: 700;
+          src: url('/fonts/Roboto-Bold.ttf') format('truetype');
+        }
+        @font-face {
+          font-family: 'Roboto';
+          font-style: italic;
+          font-weight: 700;
+          src: url('/fonts/Roboto-BoldItalic.ttf') format('truetype');
+        }
+        @font-face {
+          font-family: 'Roboto';
+          font-style: normal;
+          font-weight: 300;
+          src: url('/fonts/Roboto-Light.ttf') format('truetype');
+        }
+         @font-face {
+          font-family: 'Roboto';
+          font-style: italic;
+          font-weight: 300;
+          src: url('/fonts/Roboto-LightItalic.ttf') format('truetype');
+        }
+
+        body { font-family: 'Roboto', sans-serif; line-height: 1.6; margin: 40px; }
+        h1 { text-align: center; margin-bottom: 10px; font-weight: 700; } /* Usar bold */
+        h2 { margin-top: 40px; border-bottom: 1px solid #eee; padding-bottom: 5px; page-break-before: always; font-weight: 700; } /* Usar bold */
         /* Evitar quebra antes do H2 da primeira página de conteúdo real */
         .content-start h2:first-of-type { page-break-before: avoid; }
         p.description { font-style: italic; margin-bottom: 20px; text-align: center; }
@@ -52,10 +91,12 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
           font-size: 2.5em;
           border-bottom: none;
           margin-bottom: 20px;
+          font-weight: 700;
         }
         .cover-page .description {
           font-size: 1.1em;
           max-width: 80%;
+          font-style: italic;
         }
 
         /* Estilos do Sumário */
@@ -67,6 +108,7 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
           page-break-before: avoid; /* Não quebrar antes do título do sumário */
           margin-bottom: 20px;
           border-bottom: 1px solid #ccc;
+          font-weight: 700;
         }
         .toc-list {
           list-style: none;
@@ -76,20 +118,6 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
         .toc-list li {
           margin-bottom: 8px;
         }
-
-        /* Números de página no rodapé (excluir da capa e sumário talvez?) */
-        @page {
-          @bottom-center {
-            content: counter(page);
-            font-size: 9pt;
-            color: #888;
-          }
-        }
-        /* Opcional: Tentar remover número da primeira página (capa) 
-           @page :first {
-             @bottom-center { content: normal; }
-           }
-        */
       </style>
     </head>
     <body>
@@ -103,14 +131,14 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
       <div class="toc-page">
         <h2>Sumário</h2>
         <ul class="toc-list">
-          ${pages.map(page => `<li>${page.pageTitle}</li>`).join('')}
+          ${pages.map((page, index) => `<li><a href="#page-${page.pageIndex}">${page.pageTitle}</a></li>`).join('')}
         </ul>
       </div>
 
       {/* --- Conteúdo do Ebook --- */}
       <div class="content-start"> {/* Marcador para CSS */}
-        ${pages.map(page => `
-          <h2>${page.pageTitle}</h2> {/* Removido "Página X:" */} 
+        ${pages.map((page, index) => `
+          <h2 id="page-${page.pageIndex}">${page.pageTitle}</h2> {/* Adicionado ID */}
           <div class="page-content">${formatContent(page.content)}</div> {/* Aplicar formatação */}
         `).join('')}
       </div>
@@ -182,7 +210,7 @@ export async function GET(
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath(), // Chamar a função
-      headless: chromium.headless, 
+      headless: chromium.headless === 'shell' ? 'shell' : true, // Usar 'shell' ou true
     });
 
     const page = await browser.newPage();
@@ -191,14 +219,20 @@ export async function GET(
     // Gerar o PDF
     console.log("Gerando buffer PDF...");
     const pdfBuffer = await page.pdf({
-      format: 'A4',
+      format: 'a4', // Usar minúsculas
       printBackground: true,
       margin: {
         top: '50px',
         right: '50px',
-        bottom: '50px',
+        bottom: '60px', // Aumentar margem inferior para o rodapé
         left: '50px',
       },
+      displayHeaderFooter: true, // Habilitar cabeçalho/rodapé
+      footerTemplate: `
+        <div style="font-family: 'Roboto', sans-serif; font-size: 9px; text-align: center; width: 100%; color: #888; padding-bottom: 10px;">
+          <span class="pageNumber"></span> / <span class="totalPages"></span>
+        </div>
+      `, // Template do rodapé com número de página
     });
     console.log(`PDF gerado com sucesso. Tamanho: ${pdfBuffer.length} bytes`);
 
@@ -228,4 +262,4 @@ export async function GET(
       { status: 500 }
     );
   }
-} 
+}

@@ -1,3 +1,4 @@
+
 import { Redis } from "@upstash/redis"
 
 // Verificar se as variáveis de ambiente estão definidas
@@ -217,7 +218,9 @@ export async function createEbookQueue(
     return { ebookId, state: ebookState }
   } catch (error) {
     console.error("Erro ao criar fila do ebook:", error)
-    throw new Error(`Falha ao criar fila do ebook: ${error instanceof Error ? error.message : "Erro desconhecido"}`)
+    // Incluir mensagem do erro original
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    throw new Error(`Falha ao criar fila do ebook: ${errorMessage}`)
   }
 }
 
@@ -315,7 +318,7 @@ export async function getEbookPages(ebookId: string): Promise<EbookQueuePage[]> 
         if (typeof pageData === 'object' && pageData !== null) {
            // Dado já é um objeto - verificar se é válido
            console.warn(`Dados da página ${index} (chave ${pageKeys[index]}) já eram um objeto.`);
-           if (pageData.ebookId && typeof pageData.pageIndex === 'number' && pageData.pageTitle) {
+           if ('ebookId' in pageData && typeof pageData.pageIndex === 'number' && pageData.pageTitle) {
                parsedPage = pageData as EbookQueuePage;
            } else {
                console.error(`Objeto retornado para página ${index} é inválido:`, pageData);

@@ -1,3 +1,4 @@
+
 import { type NextRequest, NextResponse } from "next/server"
 import { getRedisClient } from "@/lib/redis"
 
@@ -34,34 +35,40 @@ export async function GET(request: NextRequest) {
 
     // Caso contrário, listar todos os ebooks na biblioteca
     try {
-      // Obter todas as chaves de ebooks na biblioteca
-      const keys = await client.keys(`${BIBLIOTECA_PREFIX}*`)
+      // Obter todas as chaves de ebooks na biblioteca usando SCAN
+      let cursor: number | string = 0;
+      const allKeys: string[] = [];
+      do {
+        // Usar 'MATCH' para filtrar pelo prefixo e 'COUNT' para buscar mais chaves por iteração (ajustável)
+        const [nextCursor, keys] = await client.scan(cursor, { match: `${BIBLIOTECA_PREFIX}*`, count: 100 });
+        allKeys.push(...keys);
+        cursor = nextCursor;
+      } while (String(cursor) !== '0'); // Continuar até o cursor retornar a "0"
 
-      if (!keys || keys.length === 0) {
-        return NextResponse.json({ success: true, ebooks: [] })
+      if (allKeys.length === 0) {
+        return NextResponse.json({ success: true, ebooks: [] });
       }
 
-      // Obter os dados de cada ebook
-      const ebooksData = await Promise.all(
-        keys.map(async (key) => {
-          const data = await client.get(key)
-          if (!data) return null
+      // Obter os dados de cada ebook usando MGET
+      const ebooksData = await client.mget<({ [key: string]: any } | string | null)[]>(...allKeys);
 
+      // Filtrar e fazer parse dos dados (lidando com possíveis objetos ou strings JSON)
+      const ebooks = ebooksData
+        .map((data, index) => {
+          if (!data) return null;
           try {
-            return typeof data === "object" ? data : JSON.parse(data as string)
+            // Se já for objeto, retornar diretamente, senão, fazer parse
+            return typeof data === "object" ? data : JSON.parse(data as string);
           } catch (parseError) {
-            console.error(`Erro ao fazer parse do ebook ${key}:`, parseError)
-            return null
+            console.error(`Erro ao fazer parse do ebook ${allKeys[index]}:`, parseError);
+            return null;
           }
-        }),
-      )
+        })
+        .filter(Boolean); // Filtrar ebooks nulos (que não puderam ser processados)
 
-      // Filtrar ebooks nulos (que não puderam ser processados)
-      const ebooks = ebooksData.filter(Boolean)
-
-      return NextResponse.json({ success: true, ebooks })
+      return NextResponse.json({ success: true, ebooks });
     } catch (error) {
-      console.error("Erro ao listar ebooks:", error)
+      console.error("Erro ao listar ebooks com scan/mget:", error);
       return NextResponse.json(
         { success: false, error: error instanceof Error ? error.message : "Erro desconhecido" },
         { status: 500 },
