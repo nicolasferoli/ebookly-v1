@@ -1,4 +1,3 @@
-
 import { type NextRequest, NextResponse } from "next/server";
 import { getEbookState, getEbookPages, EbookQueuePage } from "@/lib/redis";
 import puppeteer from 'puppeteer-core';
@@ -136,10 +135,10 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
       </div>
 
       {/* --- Conteúdo do Ebook --- */}
-      <div class="content-start"> {/* Marcador para CSS */}
+      <div class="content-start"> {/* Marcador para CSS */} 
         ${pages.map((page, index) => `
           <h2 id="page-${page.pageIndex}">${page.pageTitle}</h2> {/* Adicionado ID */}
-          <div class="page-content">${formatContent(page.content)}</div> {/* Aplicar formatação */}
+          <div class="page-content">${formatContent(page.content)}</div> {/* Aplicar formatação */} 
         `).join('')}
       </div>
   `;
@@ -158,11 +157,11 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { ebookId: string } }
+  context: { params: { ebookId: string } }
 ) {
   let browser = null;
   try {
-    const ebookId = params.ebookId;
+    const ebookId = context.params.ebookId;
 
     if (!ebookId) {
       return NextResponse.json({ success: false, error: "Ebook ID is required" }, { status: 400 });
@@ -210,7 +209,7 @@ export async function GET(
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath(), // Chamar a função
-      headless: chromium.headless === 'shell' ? 'shell' : true, // Usar 'shell' ou true
+      headless: true, // Usar true para resolver o erro de tipo
     });
 
     const page = await browser.newPage();
@@ -262,4 +261,4 @@ export async function GET(
       { status: 500 }
     );
   }
-}
+} 
