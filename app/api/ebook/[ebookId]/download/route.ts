@@ -1,14 +1,14 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { getEbookState, getEbookPages, EbookQueuePage } from "@/lib/redis";
-import puppeteer from 'puppeteer-core';
+import puppeteer, { type Browser } from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
 
 // Define a interface para o contexto da rota
-interface RouteContext {
-  params: {
-    ebookId: string;
-  };
-}
+// interface RouteContext {
+//   params: {
+//     ebookId: string;
+//   };
+// }
 
 // Função auxiliar para sanitizar nomes de arquivos
 function sanitizeFilename(filename: string): string {
@@ -164,21 +164,27 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
 
 export async function GET(
   request: NextRequest,
-  context: RouteContext
+  context: any // Usando 'any' explicitamente
 ) {
-  // Remove a verificação manual, pois o tipo garante a estrutura
-  // if (!context || !context.params || !context.params.ebookId) { ... }
-  const ebookId = context.params.ebookId;
+  let ebookId: string | undefined;
+  let browser: Browser | null = null;
 
-  // A verificação if (!ebookId) ainda é válida caso o valor seja vazio, etc.
-  if (!ebookId) {
+  // Verificar manualmente a estrutura esperada devido ao uso de 'any'
+  if (context && context.params && typeof context.params.ebookId === 'string') {
+    ebookId = context.params.ebookId;
+  } else {
+    console.error("Contexto inválido ou ebookId não encontrado:", context);
+    return NextResponse.json({ success: false, error: "Invalid request context or missing ebookId" }, { status: 400 });
+  }
+
+  if (!ebookId) { // Verificação de segurança
     return NextResponse.json({ success: false, error: "Ebook ID is required" }, { status: 400 });
   }
 
-  let browser = null;
+  // Manter apenas o try...catch original para a lógica do Puppeteer
   try {
     // Obter o estado e as páginas do ebook
-    const [ebookState, pages] = await Promise.all([
+    const [ebookState, pagesData] = await Promise.all([
       getEbookState(ebookId),
       getEbookPages(ebookId)
     ]);
@@ -193,14 +199,14 @@ export async function GET(
          return NextResponse.json({ success: false, error: "Ebook generation is not complete or has not started." }, { status: 400 });
     }
 
-    // Verificar se pages é um array válido
-     if (!Array.isArray(pages)) {
-          console.error("Erro: getEbookPages não retornou um array:", pages);
+    // Verificar se pagesData é um array válido (Renomeado para evitar conflito)
+     if (!Array.isArray(pagesData)) {
+          console.error("Erro: getEbookPages não retornou um array:", pagesData);
           return NextResponse.json({ success: false, error: "Failed to retrieve ebook pages." }, { status: 500 });
      }
 
-    // Filtrar e ordenar as páginas completas
-    const completedPages = pages
+    // Filtrar e ordenar as páginas completas (Usando pagesData)
+    const completedPages = pagesData
       .filter((page): page is EbookQueuePage & { content: string } => page.status === "completed" && typeof page.content === 'string')
       .sort((a, b) => a.pageIndex - b.pageIndex);
 
