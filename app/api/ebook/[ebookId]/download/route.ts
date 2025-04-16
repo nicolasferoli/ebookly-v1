@@ -3,6 +3,13 @@ import { getEbookState, getEbookPages, EbookQueuePage } from "@/lib/redis";
 import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
 
+// Define a interface para o contexto da rota
+interface RouteContext {
+  params: {
+    ebookId: string;
+  };
+}
+
 // Função auxiliar para sanitizar nomes de arquivos
 function sanitizeFilename(filename: string): string {
   // Remover caracteres inválidos e substituir espaços
@@ -157,16 +164,19 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
 
 export async function GET(
   request: NextRequest,
-  context: { params: { ebookId: string } }
+  context: RouteContext
 ) {
+  // Remove a verificação manual, pois o tipo garante a estrutura
+  // if (!context || !context.params || !context.params.ebookId) { ... }
+  const ebookId = context.params.ebookId;
+
+  // A verificação if (!ebookId) ainda é válida caso o valor seja vazio, etc.
+  if (!ebookId) {
+    return NextResponse.json({ success: false, error: "Ebook ID is required" }, { status: 400 });
+  }
+
   let browser = null;
   try {
-    const ebookId = context.params.ebookId;
-
-    if (!ebookId) {
-      return NextResponse.json({ success: false, error: "Ebook ID is required" }, { status: 400 });
-    }
-
     // Obter o estado e as páginas do ebook
     const [ebookState, pages] = await Promise.all([
       getEbookState(ebookId),
