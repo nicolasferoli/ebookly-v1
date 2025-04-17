@@ -244,40 +244,49 @@ export async function getEbookState(ebookId: string): Promise<EbookQueueState | 
     const ebookStateData = await client.get(`${EBOOK_PREFIX}${ebookId}`);
 
     if (!ebookStateData) {
+      console.log(`[getEbookState] Dados não encontrados para ${ebookId}`);
       return null;
     }
 
+    // Log Diagnóstico 1: Tipo de dado recebido
+    console.log(`[getEbookState] Tipo de dado recebido para ${ebookId}: ${typeof ebookStateData}`);
+    console.log(`[getEbookState] Valor recebido (preview): ${JSON.stringify(ebookStateData)?.substring(0, 100)}...`);
+
     // Verificar se já é um objeto
     if (typeof ebookStateData === "object" && ebookStateData !== null) {
+        // Log Diagnóstico 2: Entrou no bloco 'object'
+        console.log(`[getEbookState] Tratando ${ebookId} como objeto pré-parseado.`);
         // Validar minimamente se parece um EbookQueueState
         if ('id' in ebookStateData && 'title' in ebookStateData && 'totalPages' in ebookStateData) {
             return ebookStateData as EbookQueueState; 
         } else {
-            console.error("Objeto retornado pelo Redis para ebook state é inválido:", ebookStateData);
+            console.error("Objeto retornado pelo Redis para ebook state é inválido (bloco object):", ebookStateData);
             return null;
         }
     }
     
     // Se for uma string, tentar fazer o parse
     if (typeof ebookStateData === "string") {
+        // Log Diagnóstico 3: Vai tentar fazer parse
+        console.log(`[getEbookState] Tentando JSON.parse para ${ebookId}.`);
         try {
             const parsedState = JSON.parse(ebookStateData) as EbookQueueState;
              // Validar minimamente após parse
             if (parsedState && parsedState.id && parsedState.title && typeof parsedState.totalPages === 'number') {
                 return parsedState;
             } else {
-                console.error("Estado do ebook após parse é inválido:", parsedState);
+                console.error("Estado do ebook após parse é inválido (bloco string):", parsedState);
                 return null;
             }
         } catch (parseError) {
-            console.error("Erro ao fazer parse do estado do ebook string:", parseError);
-            console.error("Conteúdo recebido string:", ebookStateData);
+            console.error("Erro no JSON.parse do estado do ebook string:", parseError);
+            console.error("Conteúdo recebido (string):", ebookStateData);
             return null; 
         }
     }
 
     // Se não for nem objeto nem string (inesperado)
-    console.error(`Tipo inesperado recebido para ebook state: ${typeof ebookStateData}`);
+    console.error(`[getEbookState] Tipo inesperado (${typeof ebookStateData}) recebido para ${ebookId}.`);
     return null;
 
   } catch (error) {
