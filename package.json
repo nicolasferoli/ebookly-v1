@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && tsc railway-worker.ts --outDir dist/worker --module commonjs --target es2020 --resolveJsonModule --esModuleInterop --skipLibCheck",
     "start": "next start",
     "lint": "next lint"
   },
@@ -39,6 +39,7 @@
     "@radix-ui/react-toggle-group": "^1.1.1",
     "@radix-ui/react-tooltip": "latest",
     "@sparticuz/chromium": "^133.0.0",
+    "@types/ioredis": "^5.0.0",
     "@types/pdfkit": "^0.13.9",
     "@upstash/redis": "^1.34.7",
     "ai": "^4.3.6",
@@ -49,6 +50,7 @@
     "date-fns": "latest",
     "embla-carousel-react": "8.5.1",
     "input-otp": "1.4.1",
+    "ioredis": "^5.6.1",
     "lucide-react": "^0.454.0",
     "next": "15.2.4",
     "next-themes": "^0.4.4",
@@ -63,6 +65,7 @@
     "sonner": "^1.7.1",
     "tailwind-merge": "^2.5.5",
     "tailwindcss-animate": "^1.0.7",
+    "tsx": "^4.19.3",
     "vaul": "^0.9.6",
     "zod": "^3.24.1"
   },
