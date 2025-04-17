@@ -1,3 +1,4 @@
+
 "use client"
 
 import { useState, useEffect } from "react"
@@ -10,6 +11,7 @@ import { formatDistanceToNow } from "date-fns"
 import { ptBR } from "date-fns/locale"
 import { SimpleLoading } from "@/components/simple-loading"
 import { PageViewer } from "@/components/page-viewer"
+import { useToast } from "@/components/ui/use-toast"
 
 type EbookInLibrary = {
   id: string
@@ -29,6 +31,7 @@ export default function BibliotecaPage() {
   const [searchTerm, setSearchTerm] = useState("")
   const [selectedEbook, setSelectedEbook] = useState<EbookInLibrary | null>(null)
   const [selectedPageIndex, setSelectedPageIndex] = useState<number | null>(null)
+  const { toast } = useToast()
 
   // Carregar ebooks da biblioteca
   useEffect(() => {
@@ -106,13 +109,28 @@ export default function BibliotecaPage() {
           setSelectedEbook(null)
           setSelectedPageIndex(null)
         }
+
+        // Adicionar toast de sucesso
+        toast({
+          title: "Ebook Excluído",
+          description: "O ebook foi removido da sua biblioteca.",
+        })
       } else {
         console.error("Erro ao excluir ebook:", data.error)
-        alert(`Erro ao excluir ebook: ${data.error}`)
+        toast({
+          variant: "destructive",
+          title: "Erro ao Excluir",
+          description: data.error || "Não foi possível excluir o ebook.",
+        })
       }
     } catch (error) {
       console.error("Erro ao excluir ebook:", error)
-      alert(`Erro ao excluir ebook: ${error instanceof Error ? error.message : "Erro desconhecido"}`)
+      const errorMessage = error instanceof Error ? error.message : "Erro desconhecido"
+      toast({
+        variant: "destructive",
+        title: "Erro ao Excluir",
+        description: errorMessage,
+      })
     }
   }
 
