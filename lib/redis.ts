@@ -420,39 +420,22 @@ export async function updatePageStatus(
 
     // Obter a página atual
     const pageKey = `${EBOOK_PAGE_PREFIX}${ebookId}:${pageIndex}`
-    const pageData = await client.get(pageKey)
+    const pageData = await client.get<string | null>(pageKey); // Esperar string ou null
 
     if (!pageData) {
       console.warn(`Página ${pageIndex} para o ebook ${ebookId} não encontrada.`)
       return
     }
 
-    // Converter pageData para objeto
-    let page: EbookQueuePage
-    if (typeof pageData === "object" && pageData !== null) {
-      page = pageData as EbookQueuePage
-    } else if (typeof pageData === "string") {
-      try {
-        page = JSON.parse(pageData) as EbookQueuePage
-      } catch (parseError) {
-        console.error("Erro ao fazer parse dos dados da página:", parseError)
-        console.error("Conteúdo recebido:", pageData)
-
-        // Criar um objeto de página padrão para evitar falhas
-        page = {
-          ebookId,
-          pageIndex,
-          pageTitle: `Página ${pageIndex + 1}`,
-          status: "queued",
-          content: "",
-          attempts: 0,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        }
-      }
-    } else {
-      console.error(`Tipo de dados inesperado retornado pelo Redis: ${typeof pageData}`)
-      return
+    // Sempre fazer parse da string retornada
+    let page: EbookQueuePage;
+    try {
+      page = JSON.parse(pageData) as EbookQueuePage
+    } catch (parseError) {
+      console.error("Erro ao fazer parse dos dados da página em updatePageStatus:", parseError)
+      console.error("Conteúdo recebido:", pageData)
+      // Se não conseguir fazer parse, não podemos continuar a atualização
+      return;
     }
 
     // Atualizar os dados da página
@@ -460,7 +443,7 @@ export async function updatePageStatus(
     page.content = content
     page.error = error
     page.updatedAt = Date.now()
-    page.attempts += 1
+    // Não incrementar attempts aqui, pois não sabemos se era uma tentativa de processamento
 
     // Salvar a página atualizada no Redis
     await client.set(pageKey, JSON.stringify(page))
@@ -579,34 +562,23 @@ export async function getEbookPage(
 
     // Obter os dados da página do Redis
     const pageKey = `${EBOOK_PAGE_PREFIX}${ebookId}:${pageIndex}`
-    const pageData = await client.get(pageKey)
+    const pageData = await client.get<string | null>(pageKey); // Esperar string ou null
 
     if (!pageData) {
       return null
     }
 
-    // Verificar se pageData já é um objeto (não precisa de parse)
-    if (typeof pageData === "object" && pageData !== null && !Array.isArray(pageData)) {
-      // Verificar se tem as propriedades mínimas esperadas
-      if ('ebookId' in pageData && 'pageIndex' in pageData && 'pageTitle' in pageData) {
-        return pageData as EbookQueuePage
-      } else {
-         console.error("Objeto da página retornado pelo Redis não tem as propriedades esperadas:", pageData)
-         return null
-      }
-    }
-
-    // Se for uma string, fazer o parse
+    // Sempre fazer parse da string retornada
     try {
-      const parsedPage = JSON.parse(pageData as string) as EbookQueuePage
+      const parsedPage = JSON.parse(pageData) as EbookQueuePage
        // Verificar se tem as propriedades mínimas esperadas após parse
-      if (!parsedPage.ebookId || typeof parsedPage.pageIndex !== 'number' || !parsedPage.pageTitle) {
-        console.error("Dados da página não têm as propriedades esperadas após parse:", parsedPage)
+      if (!parsedPage || !parsedPage.ebookId || typeof parsedPage.pageIndex !== 'number' || !parsedPage.pageTitle) {
+        console.error("Dados da página inválidos após parse em getEbookPage:", parsedPage)
         return null
       }
       return parsedPage
     } catch (parseError) {
-      console.error(`Erro ao fazer parse dos dados da página ${pageIndex}:`, parseError)
+      console.error(`Erro ao fazer parse dos dados da página ${pageIndex} em getEbookPage:`, parseError)
       console.error("Conteúdo recebido:", pageData)
       return null
     }
