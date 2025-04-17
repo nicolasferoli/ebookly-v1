@@ -3,6 +3,12 @@ import { getEbookState, getEbookPages, updatePageStatus } from '@/lib/redis'; //
 import { generateText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 
+// Definir tipo para o item da fila
+type QueueItem = {
+  ebookId: string;
+  pageIndex: number;
+};
+
 // Atenção: Este script é para ser executado fora do ambiente Next.js/Vercel.
 // Certifique-se de que as variáveis de ambiente (OPENAI_API_KEY, KV_URL)
 // estejam disponíveis no ambiente onde este worker será executado (ex: Railway).
@@ -79,7 +85,7 @@ async function generatePageContent(
 }
 
 // Função para processar um item da fila (copiado de app/api/worker/route.ts e adaptado para log)
-async function processQueueItem(item: { ebookId: string; pageIndex: number }): Promise<boolean> {
+async function processQueueItem(item: QueueItem): Promise<boolean> {
   const { ebookId, pageIndex } = item;
   console.log(`[Worker] Processing job: EbookID=${ebookId}, PageIndex=${pageIndex}`);
 
@@ -183,10 +189,9 @@ const queueName = 'ebook_generation_queue';
 
 async function main() {
   console.log(`[Worker] Started. Waiting for jobs on queue: ${queueName}`);
-  // Não precisamos mais do ping inicial, ioredis gerencia a conexão com eventos
+  let currentProcessingItem: QueueItem | null = null; // Usar o tipo definido
 
   while (true) {
-    let currentProcessingItem: { ebookId: string; pageIndex: number } | null = null; // Renomear para clareza
     try {
       currentProcessingItem = null; // Resetar a cada iteração
       console.log(`[Worker] Waiting for next job on ${queueName}...`);
@@ -196,9 +201,10 @@ async function main() {
         const jobString = result[1];
         try {
           const parsedData = JSON.parse(jobString);
-          if (parsedData && typeof parsedData === 'object' && 'ebookId' in parsedData && 'pageIndex' in parsedData) {
-              currentProcessingItem = parsedData as { ebookId: string; pageIndex: number }; // Atribuir aqui
-              await processQueueItem(currentProcessingItem); // Passar o item validado
+          // Validar a estrutura do objeto parseado
+          if (parsedData && typeof parsedData === 'object' && 'ebookId' in parsedData && typeof parsedData.ebookId === 'string' && 'pageIndex' in parsedData && typeof parsedData.pageIndex === 'number') {
+              currentProcessingItem = parsedData as QueueItem; // Atribuir com o tipo correto
+              await processQueueItem(currentProcessingItem);
           } else {
               console.error("[Worker] Received invalid job data structure after parsing:", parsedData);
           }
@@ -215,17 +221,13 @@ async function main() {
 
     } catch (error) {
       console.error('[Worker] Error in main loop:', error);
-      // Verificar se currentProcessingItem foi definido antes de tentar usá-lo
       if (currentProcessingItem) {
-          const failedItem = currentProcessingItem; // Criar cópia para o escopo do catch
+          // Usar o tipo QueueItem explicitamente aqui também
+          const failedItem: QueueItem = currentProcessingItem;
           console.error('[Worker] Failed while potentially processing item:', failedItem);
           try {
-              // Adicionar checagem de tipo explícita para ajudar o linter
-              if (failedItem && typeof failedItem === 'object' && 'ebookId' in failedItem && 'pageIndex' in failedItem) {
-                  await updatePageStatus(failedItem.ebookId, failedItem.pageIndex, "failed", "", "Worker main loop error");
-              } else {
-                  console.error("[Worker] Could not update status for failed item due to unexpected structure:", failedItem);
-              }
+              // A verificação ainda é boa prática, mas o tipo já está definido
+              await updatePageStatus(failedItem.ebookId, failedItem.pageIndex, "failed", "", "Worker main loop error");
           } catch (statusError) {
               console.error("[Worker] Failed to update status to failed after main loop error", statusError);
           }
