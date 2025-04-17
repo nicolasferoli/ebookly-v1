@@ -223,8 +223,6 @@ export async function createEbookQueue(
   }
 }
 
-// Modificar a função getEbookState para lidar melhor com diferentes tipos de resposta
-
 // Função para obter o estado de um ebook
 export async function getEbookState(ebookId: string): Promise<EbookQueueState | null> {
   try {
@@ -242,26 +240,49 @@ export async function getEbookState(ebookId: string): Promise<EbookQueueState | 
       return null
     }
 
-    // Obter o estado do ebook do Redis
-    const ebookStateString = await client.get<string | null>(`${EBOOK_PREFIX}${ebookId}`); // Esperar string ou null
+    // Obter o estado do ebook do Redis. A biblioteca pode retornar string ou objeto.
+    const ebookStateData = await client.get(`${EBOOK_PREFIX}${ebookId}`);
 
-    if (!ebookStateString) {
-      return null
+    if (!ebookStateData) {
+      return null;
     }
 
-    // Sempre fazer parse da string
-    try {
-      return JSON.parse(ebookStateString) as EbookQueueState
-    } catch (parseError) {
-      console.error("Erro ao fazer parse do estado do ebook:", parseError)
-      console.error("Conteúdo recebido:", ebookStateString)
-      // Retornar null ou lançar erro, dependendo do que faz mais sentido para quem chama
-      // Retornar null é mais seguro para evitar quebrar a aplicação
-      return null; 
+    // Verificar se já é um objeto
+    if (typeof ebookStateData === "object" && ebookStateData !== null) {
+        // Validar minimamente se parece um EbookQueueState
+        if ('id' in ebookStateData && 'title' in ebookStateData && 'totalPages' in ebookStateData) {
+            return ebookStateData as EbookQueueState; 
+        } else {
+            console.error("Objeto retornado pelo Redis para ebook state é inválido:", ebookStateData);
+            return null;
+        }
     }
+    
+    // Se for uma string, tentar fazer o parse
+    if (typeof ebookStateData === "string") {
+        try {
+            const parsedState = JSON.parse(ebookStateData) as EbookQueueState;
+             // Validar minimamente após parse
+            if (parsedState && parsedState.id && parsedState.title && typeof parsedState.totalPages === 'number') {
+                return parsedState;
+            } else {
+                console.error("Estado do ebook após parse é inválido:", parsedState);
+                return null;
+            }
+        } catch (parseError) {
+            console.error("Erro ao fazer parse do estado do ebook string:", parseError);
+            console.error("Conteúdo recebido string:", ebookStateData);
+            return null; 
+        }
+    }
+
+    // Se não for nem objeto nem string (inesperado)
+    console.error(`Tipo inesperado recebido para ebook state: ${typeof ebookStateData}`);
+    return null;
+
   } catch (error) {
-    console.error("Erro ao obter estado do ebook:", error)
-    return null
+    console.error("Erro ao obter estado do ebook:", error);
+    return null;
   }
 }
 
@@ -414,39 +435,61 @@ export async function updatePageStatus(
     }
 
     // Obter a página atual
-    const pageKey = `${EBOOK_PAGE_PREFIX}${ebookId}:${pageIndex}`
-    const pageData = await client.get<string | null>(pageKey); // Esperar string ou null
+    const pageKey = `${EBOOK_PAGE_PREFIX}${ebookId}:${pageIndex}`;
+    const pageData = await client.get(pageKey); // Pode retornar string ou objeto
 
     if (!pageData) {
       console.warn(`Página ${pageIndex} para o ebook ${ebookId} não encontrada.`)
-      return
-    }
-
-    // Sempre fazer parse da string retornada
-    let page: EbookQueuePage;
-    try {
-      page = JSON.parse(pageData) as EbookQueuePage
-    } catch (parseError) {
-      console.error("Erro ao fazer parse dos dados da página em updatePageStatus:", parseError)
-      console.error("Conteúdo recebido:", pageData)
-      // Se não conseguir fazer parse, não podemos continuar a atualização
       return;
     }
 
-    // Atualizar os dados da página
-    page.status = status
-    page.content = content
-    page.error = error
-    page.updatedAt = Date.now()
-    // Não incrementar attempts aqui, pois não sabemos se era uma tentativa de processamento
+    // Converter/validar pageData para objeto
+    let page: EbookQueuePage | null = null;
+
+    if (typeof pageData === "object" && pageData !== null) {
+        // Validar minimamente
+         if ('ebookId' in pageData && 'pageIndex' in pageData && 'pageTitle' in pageData) {
+            page = pageData as EbookQueuePage;
+         } else {
+            console.error("Objeto retornado pelo Redis para page data em updatePageStatus é inválido:", pageData);
+         }
+    } else if (typeof pageData === "string") {
+      try {
+        const parsedPage = JSON.parse(pageData) as EbookQueuePage;
+         // Validar minimamente após parse
+         if (parsedPage && parsedPage.ebookId && typeof parsedPage.pageIndex === 'number' && parsedPage.pageTitle) {
+             page = parsedPage;
+         } else {
+             console.error("Dados da página inválidos após parse em updatePageStatus:", parsedPage);
+         }
+      } catch (parseError) {
+        console.error("Erro ao fazer parse dos dados da página (string) em updatePageStatus:", parseError)
+        console.error("Conteúdo recebido string:", pageData)
+      }
+    } else {
+       console.error(`Tipo inesperado recebido para page data em updatePageStatus: ${typeof pageData}`);
+    }
+
+    // Se não conseguimos obter um objeto de página válido, não podemos continuar
+    if (!page) {
+        console.error(`Não foi possível obter dados válidos para a página ${pageIndex} do ebook ${ebookId}. Abortando atualização.`);
+        return;
+    }
+
+    // Atualizar os dados da página (agora 'page' é um objeto EbookQueuePage válido)
+    page.status = status;
+    page.content = content;
+    page.error = error;
+    page.updatedAt = Date.now();
+    // Não incrementar attempts aqui intencionalmente
 
     // Salvar a página atualizada no Redis
-    await client.set(pageKey, JSON.stringify(page))
+    await client.set(pageKey, JSON.stringify(page));
 
     // Atualizar o estado do ebook
-    await updateEbookState(ebookId)
+    await updateEbookState(ebookId);
   } catch (error) {
-    console.error("Erro ao atualizar status da página:", error)
+    console.error("Erro ao atualizar status da página:", error);
   }
 }
 
@@ -556,29 +599,48 @@ export async function getEbookPage(
     }
 
     // Obter os dados da página do Redis
-    const pageKey = `${EBOOK_PAGE_PREFIX}${ebookId}:${pageIndex}`
-    const pageData = await client.get<string | null>(pageKey); // Esperar string ou null
+    const pageKey = `${EBOOK_PAGE_PREFIX}${ebookId}:${pageIndex}`; 
+    const pageData = await client.get(pageKey); // Pode retornar string ou objeto
 
     if (!pageData) {
-      return null
+      return null;
     }
 
-    // Sempre fazer parse da string retornada
-    try {
-      const parsedPage = JSON.parse(pageData) as EbookQueuePage
-       // Verificar se tem as propriedades mínimas esperadas após parse
-      if (!parsedPage || !parsedPage.ebookId || typeof parsedPage.pageIndex !== 'number' || !parsedPage.pageTitle) {
-        console.error("Dados da página inválidos após parse em getEbookPage:", parsedPage)
-        return null
-      }
-      return parsedPage
-    } catch (parseError) {
-      console.error(`Erro ao fazer parse dos dados da página ${pageIndex} em getEbookPage:`, parseError)
-      console.error("Conteúdo recebido:", pageData)
-      return null
+    // Verificar se já é um objeto
+    if (typeof pageData === "object" && pageData !== null) {
+        // Validar minimamente
+        if ('ebookId' in pageData && 'pageIndex' in pageData && 'pageTitle' in pageData) {
+            return pageData as EbookQueuePage;
+        } else {
+            console.error("Objeto retornado pelo Redis para page data é inválido:", pageData);
+            return null;
+        }
     }
+
+    // Se for string, tentar fazer o parse
+    if (typeof pageData === "string") {
+        try {
+            const parsedPage = JSON.parse(pageData) as EbookQueuePage;
+            // Validar minimamente após parse
+            if (parsedPage && parsedPage.ebookId && typeof parsedPage.pageIndex === 'number' && parsedPage.pageTitle) {
+                return parsedPage;
+            } else {
+                console.error("Dados da página inválidos após parse em getEbookPage:", parsedPage);
+                return null;
+            }
+        } catch (parseError) {
+            console.error(`Erro ao fazer parse dos dados da página ${pageIndex} (string) em getEbookPage:`, parseError);
+            console.error("Conteúdo recebido string:", pageData);
+            return null;
+        }
+    }
+
+     // Se não for nem objeto nem string (inesperado)
+    console.error(`Tipo inesperado recebido para page data: ${typeof pageData}`);
+    return null;
+
   } catch (error) {
-    console.error(`Erro ao obter página ${pageIndex} do ebook ${ebookId}:`, error)
-    return null
+    console.error(`Erro ao obter página ${pageIndex} do ebook ${ebookId}:`, error);
+    return null;
   }
 }
