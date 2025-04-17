@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build && tsc railway-worker.ts --outDir dist/worker --module commonjs --target es2020 --resolveJsonModule --esModuleInterop --skipLibCheck",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "worker": "node dist/worker/railway-worker.js"
   },
   "dependencies": {
     "@ai-sdk/openai": "^1.3.11",
