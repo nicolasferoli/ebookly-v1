@@ -243,26 +243,21 @@ export async function getEbookState(ebookId: string): Promise<EbookQueueState | 
     }
 
     // Obter o estado do ebook do Redis
-    const ebookState = await client.get(`${EBOOK_PREFIX}${ebookId}`)
+    const ebookStateString = await client.get<string | null>(`${EBOOK_PREFIX}${ebookId}`); // Esperar string ou null
 
-    if (!ebookState) {
+    if (!ebookStateString) {
       return null
     }
 
-    // Verificar se ebookState já é um objeto (não precisa de parse)
-    if (typeof ebookState === "object" && ebookState !== null && !Array.isArray(ebookState)) {
-      return ebookState as EbookQueueState
-    }
-
-    // Se for uma string, fazer o parse
+    // Sempre fazer parse da string
     try {
-      return JSON.parse(ebookState as string) as EbookQueueState
+      return JSON.parse(ebookStateString) as EbookQueueState
     } catch (parseError) {
       console.error("Erro ao fazer parse do estado do ebook:", parseError)
-      console.error("Conteúdo recebido:", ebookState)
-      throw new Error(
-        `Erro ao analisar o estado do ebook: ${parseError instanceof Error ? parseError.message : "Erro desconhecido"}`,
-      )
+      console.error("Conteúdo recebido:", ebookStateString)
+      // Retornar null ou lançar erro, dependendo do que faz mais sentido para quem chama
+      // Retornar null é mais seguro para evitar quebrar a aplicação
+      return null; 
     }
   } catch (error) {
     console.error("Erro ao obter estado do ebook:", error)
