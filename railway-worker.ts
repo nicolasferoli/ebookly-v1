@@ -1,5 +1,5 @@
 import Redis from 'ioredis';
-import { getEbookState, getEbookPages, updatePageStatus } from '@/lib/redis'; // Assumindo que estas funções existem e são exportadas de lib/redis
+import { getEbookState, getEbookPages, updatePageStatus } from './lib/redis'; // Alterado de @/lib/redis
 import { generateText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 
