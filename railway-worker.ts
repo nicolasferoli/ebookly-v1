@@ -1,5 +1,10 @@
-import Redis from 'ioredis';
-import { getEbookState, getEbookPages, updatePageStatus } from './lib/redis'; // Alterado de @/lib/redis
+import { 
+  getRedisClient, 
+  getEbookState, 
+  getEbookPages, 
+  updatePageStatus,
+  checkRedisConnection // Importar a função de checagem
+} from './lib/redis'; 
 import { generateText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 
@@ -10,9 +15,8 @@ type QueueItem = {
 };
 
 // Atenção: Este script é para ser executado fora do ambiente Next.js/Vercel.
-// Certifique-se de que as variáveis de ambiente (OPENAI_API_KEY, KV_URL)
+// Certifique-se de que as variáveis de ambiente (OPENAI_API_KEY, KV_REST_API_URL, KV_REST_API_TOKEN)
 // estejam disponíveis no ambiente onde este worker será executado (ex: Railway).
-// KV_URL é a string de conexão padrão do Redis (rediss://...)
 
 // Configurações de conteúdo (copiado de app/api/worker/route.ts)
 const CONTENT_MODES = {
@@ -151,10 +155,9 @@ async function processQueueItem(item: QueueItem): Promise<boolean> {
   }
 }
 
-// --- Configurar Conexão Redis com ioredis ---
-// Usará a variável de ambiente KV_URL configurada na Railway
-if (!process.env.KV_URL) {
-    console.error("Missing environment variable: KV_URL is required for ioredis connection.");
+// Verificar variáveis de ambiente necessárias no início
+if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) {
+    console.error("Missing environment variables: KV_REST_API_URL and KV_REST_API_TOKEN are required.");
     process.exit(1);
 }
 if (!process.env.OPENAI_API_KEY) {
@@ -162,79 +165,85 @@ if (!process.env.OPENAI_API_KEY) {
     // Poderia sair com process.exit(1) aqui também se for crítico
 }
 
-const redis = new Redis(process.env.KV_URL, {
-    // Opções adicionais de ioredis podem ser necessárias para Vercel KV/Upstash,
-    // especialmente se TLS for obrigatório (geralmente é com rediss://)
-    // A opção padrão `enableTLSForSentinelMode` pode ser suficiente, mas verificar.
-    // Adicionar maxRetriesPerRequest: null para tentar reconectar indefinidamente.
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false // Pode ser útil com alguns provedores de Redis
-});
-
-redis.on('error', (err) => {
-  console.error('[Worker] Redis connection error:', err);
-  // ioredis tenta reconectar automaticamente por padrão
-});
-
-redis.on('connect', () => {
-  console.log('[Worker] Connected to Redis.');
-});
-
-redis.on('ready', () => {
-  console.log('[Worker] Redis client ready.');
-});
-
 // TODO: Confirmar o nome exato da fila usado no seu código que adiciona itens!
-const queueName = 'ebook_generation_queue';
+const queueName = 'ebook_generation_queue'; 
 
 async function main() {
+  console.log("[Worker] Initializing...");
+
+  // Obter o cliente Redis configurado de lib/redis
+  const redisClient = getRedisClient();
+
+  if (!redisClient) {
+    console.error("[Worker] Failed to initialize Redis client from lib. Exiting.");
+    process.exit(1);
+  }
+
+  // Verificar a conexão inicial
+  const isConnected = await checkRedisConnection();
+  if (!isConnected) {
+      console.error("[Worker] Initial Redis connection check failed. Exiting.");
+      process.exit(1);
+  }
+  console.log("[Worker] Initial Redis connection successful.");
+
+
   console.log(`[Worker] Started. Waiting for jobs on queue: ${queueName}`);
-  let currentProcessingItem: QueueItem | null = null; // Usar o tipo definido
+  let currentProcessingItem: QueueItem | null = null; 
 
   while (true) {
     try {
       currentProcessingItem = null; // Resetar a cada iteração
-      console.log(`[Worker] Waiting for next job on ${queueName}...`);
-      const result = await redis.brpop(queueName, 0);
+      console.log(`[Worker] Checking for next job on ${queueName}... (Using rpop)`);
+      
+      // Usar rpop (não-bloqueante) em vez de brpop
+      // rpop retorna o elemento ou null se a lista estiver vazia
+      const jobString = await redisClient.rpop(queueName); 
 
-      if (result && Array.isArray(result) && result.length === 2) {
-        const jobString = result[1];
+      if (jobString) { // Se encontrou um job
         try {
           const parsedData = JSON.parse(jobString);
           // Validar a estrutura do objeto parseado
           if (parsedData && typeof parsedData === 'object' && 'ebookId' in parsedData && typeof parsedData.ebookId === 'string' && 'pageIndex' in parsedData && typeof parsedData.pageIndex === 'number') {
               currentProcessingItem = parsedData as QueueItem; // Atribuir com o tipo correto
-              await processQueueItem(currentProcessingItem);
+              await processQueueItem(currentProcessingItem); // Processa imediatamente
           } else {
               console.error("[Worker] Received invalid job data structure after parsing:", parsedData);
           }
         } catch (parseError) {
           console.error("[Worker] Failed to parse JSON from queue:", jobString, parseError);
         }
-      } else if (result !== null) {
-         console.log('[Worker] BRPOP returned unexpected non-null result:', result);
-         await new Promise(resolve => setTimeout(resolve, 5000));
       } else {
-        console.log('[Worker] BRPOP returned null. Pausing before retry...');
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        // Fila vazia, esperar um pouco antes de verificar novamente
+        // console.log('[Worker] Queue empty. Pausing before next check...');
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Espera 1 segundo
       }
 
     } catch (error) {
       console.error('[Worker] Error in main loop:', error);
-      if (currentProcessingItem) {
-          // Usar o tipo QueueItem explicitamente aqui também
-          const failedItem: QueueItem = currentProcessingItem;
+      // Verificar se a conexão Redis ainda é válida antes de tentar atualizar o status
+      const connectionStillValid = await checkRedisConnection(); 
+      if (currentProcessingItem && connectionStillValid) {
+          const failedItem: QueueItem = currentProcessingItem; 
           console.error('[Worker] Failed while potentially processing item:', failedItem);
           try {
-              // A verificação ainda é boa prática, mas o tipo já está definido
               await updatePageStatus(failedItem.ebookId, failedItem.pageIndex, "failed", "", "Worker main loop error");
           } catch (statusError) {
               console.error("[Worker] Failed to update status to failed after main loop error", statusError);
           }
+      } else if (!connectionStillValid) {
+           console.error("[Worker] Redis connection lost. Cannot update status for item:", currentProcessingItem);
+           // Implementar lógica de reconexão ou saída se necessário
+           await new Promise(resolve => setTimeout(resolve, 10000)); // Pausa maior se a conexão cair
       } else {
           console.error("[Worker] Error occurred before an item was successfully parsed/assigned.");
       }
-      await new Promise(resolve => setTimeout(resolve, 5000));
+      // Pausa antes de tentar novamente no loop principal
+      if (!connectionStillValid) {
+        await new Promise(resolve => setTimeout(resolve, 10000));
+      } else {
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
     }
   }
 }
@@ -242,5 +251,5 @@ async function main() {
 // Iniciar o processo principal
 main().catch(error => {
     console.error("[Worker] Unhandled error in main execution:", error);
-    process.exit(1);
+    process.exit(1); // Sai se a função main falhar catastroficamente
 }); 
