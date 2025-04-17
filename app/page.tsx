@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { BookText, Download, AlertCircle, ArrowRight, Database, RefreshCw, Library } from "lucide-react"
+import { BookText, Download, AlertCircle, ArrowRight, Database, RefreshCw, Library, Play } from "lucide-react"
 import { getContentModes, getCurrentContentMode } from "@/lib/ebook-generator"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -68,6 +68,9 @@ export default function EbookGenerator() {
 
   // Modos de conteúdo disponíveis
   const contentModes = getContentModes()
+
+  // Novo estado para feedback
+  const [isStartingWorker, setIsStartingWorker] = useState(false)
 
   // Atualizar o modo de conteúdo quando mudar
   useEffect(() => {
@@ -528,21 +531,36 @@ export default function EbookGenerator() {
     updateEbookStatus()
   }
 
-  // Função para continuar o processamento
+  // Função para continuar o processamento (chamando o worker)
   const handleContinueProcessing = async () => {
-    if (!currentEbookId) return
+    // Verificar se o worker já está sendo chamado ou se não há ebookId
+    if (isStartingWorker || !currentEbookId) return;
 
     try {
-      // Iniciar o worker para processar mais itens da fila
-      await startWorker(10)
+      setIsStartingWorker(true); // Inicia o estado de loading
+      setError(null);
 
-      // Iniciar o polling para atualizar o status
-      startPolling()
+      // Chamar a função que inicia/avisa o worker
+      const response = await startWorker();
+      console.log("Worker iniciado com sucesso:", response);
+
+      // --- CORREÇÃO --- 
+      // Após iniciar o worker com sucesso:
+      // 1. Buscar o status imediatamente
+      await updateEbookStatus();
+      // 2. Garantir que o polling está ativo (ele pode ter parado por erro)
+      startPolling();
+      // --- FIM DA CORREÇÃO ---
+
     } catch (error) {
-      console.error("Error continuing processing:", error)
-      setError(error instanceof Error ? error.message : "Erro ao continuar o processamento")
+      console.error("Erro ao tentar continuar processamento:", error);
+      setError(error instanceof Error ? error.message : String(error));
+      // Parar o polling se o início do worker falhar?
+      // stopPolling();
+    } finally {
+      setIsStartingWorker(false); // Finaliza o estado de loading, mesmo com erro
     }
-  }
+  };
 
   // Função para salvar o ebook na biblioteca
   const handleSaveToLibrary = async () => {
@@ -778,15 +796,27 @@ export default function EbookGenerator() {
               </div>
             )}
 
-            <div className="flex justify-between">
-              <Button variant="outline" size="sm" onClick={handleRefreshStatus}>
-                <RefreshCw className="mr-1 h-4 w-4" />
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                onClick={handleRefreshStatus}
+                disabled={isPolling}
+              >
+                <RefreshCw className={`mr-2 h-4 w-4 ${isPolling ? 'animate-spin' : ''}`} />
                 Atualizar Status
               </Button>
-
-              <Button variant="outline" size="sm" onClick={handleContinueProcessing}>
-                <Database className="mr-1 h-4 w-4" />
-                Continuar Processamento
+              {/* Botão Continuar Processamento Atualizado */}
+              <Button
+                variant="outline"
+                onClick={handleContinueProcessing}
+                disabled={isStartingWorker || !currentEbookId || ebookState?.status === 'completed' || ebookState?.status === 'processing'}
+              >
+                {isStartingWorker ? (
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Play className="mr-2 h-4 w-4" />
+                )}
+                {isStartingWorker ? "Iniciando..." : "Continuar Processamento"}
               </Button>
             </div>
 
