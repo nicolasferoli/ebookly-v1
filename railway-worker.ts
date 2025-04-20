@@ -170,7 +170,7 @@ if (!process.env.OPENAI_API_KEY) {
 }
 
 // TODO: Confirmar o nome exato da fila usado no seu código que adiciona itens!
-const queueName = 'ebook_generation_queue'; 
+const queueName = `${EBOOK_PAGES_PREFIX}pages`;
 
 async function main() {
   console.log("[Worker] Initializing...");
