@@ -1,9 +1,9 @@
-
 import type React from "react"
 import "./globals.css"
 import { Inter } from "next/font/google"
 import { ThemeProvider } from "@/components/theme-provider"
 import { Sidebar } from "@/components/sidebar"
+import { Header } from "@/components/layout/Header"
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -21,10 +21,11 @@ export default function RootLayout({
   return (
     <html lang="pt-BR" suppressHydrationWarning>
       <body className={inter.className}>
-        <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
-          <div className="flex min-h-screen bg-white">
+        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
+          <div className="flex min-h-screen">
             <Sidebar />
-            <main className="flex-1 md:ml-64 pt-16 md:pt-0">
+            <Header />
+            <main className="flex-1 md:ml-64 pt-16">
               <div className="p-4 md:p-6">{children}</div>
             </main>
           </div>
