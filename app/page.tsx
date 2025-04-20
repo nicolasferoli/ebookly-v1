@@ -15,6 +15,7 @@ import { StepIndicator } from "@/components/step-indicator"
 import { GenerationStatus } from "@/components/generation-status"
 import { PageViewer } from "@/components/page-viewer"
 import { SimpleLoading } from "@/components/simple-loading"
+import { cn } from "@/lib/utils"
 
 // Tempo médio estimado por página em segundos (varia conforme o modo de conteúdo)
 const ESTIMATED_TIME_PER_PAGE = {
@@ -150,8 +151,6 @@ export default function EbookGenerator() {
     setIsPolling(false)
   }
 
-  // Adicionar tratamento de erro mais robusto na função updateEbookStatus
-
   // Função para atualizar o status do ebook
   const updateEbookStatus = async () => {
     if (!currentEbookId) return
@@ -232,8 +231,6 @@ export default function EbookGenerator() {
            const errorMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
            setError(`Erro ao buscar status do ebook: ${errorMsg}`);
         }
-        // Parar o polling em caso de erro de fetch também?
-        // stopPolling();
       }
     } catch (error) {
       console.error("Unhandled error in updateEbookStatus:", error)
@@ -510,20 +507,7 @@ export default function EbookGenerator() {
     console.log("Attempting to download from:", downloadUrl);
 
     // Iniciar o download (forma simples via navegação)
-    // Isso deve funcionar, mas não registra uma entrada óbvia no Network as vezes
-    // como um fetch, mas o download deve iniciar.
     window.location.href = downloadUrl;
-
-    // Alternativa (menos comum para downloads diretos):
-    // fetch(downloadUrl)
-    //  .then(response => {
-    //    if (!response.ok) throw new Error('Download failed');
-    //    // ... (lógica mais complexa para criar blob e link, geralmente não necessária)
-    //  })
-    //  .catch(err => {
-    //    console.error("Download fetch error:", err);
-    //    setError("Falha ao iniciar o download.");
-    //  });
   }
 
   // Função para forçar a atualização do status
@@ -544,19 +528,15 @@ export default function EbookGenerator() {
       const response = await startWorker();
       console.log("Worker iniciado com sucesso:", response);
 
-      // --- CORREÇÃO --- 
       // Após iniciar o worker com sucesso:
       // 1. Buscar o status imediatamente
       await updateEbookStatus();
       // 2. Garantir que o polling está ativo (ele pode ter parado por erro)
       startPolling();
-      // --- FIM DA CORREÇÃO ---
 
     } catch (error) {
       console.error("Erro ao tentar continuar processamento:", error);
       setError(error instanceof Error ? error.message : String(error));
-      // Parar o polling se o início do worker falhar?
-      // stopPolling();
     } finally {
       setIsStartingWorker(false); // Finaliza o estado de loading, mesmo com erro
     }
@@ -654,38 +634,35 @@ export default function EbookGenerator() {
   // Renderizar o passo 1: Nome do Ebook
   const renderStep1 = () => {
     return (
-      <Card className="shadow-sm">
-        <CardHeader>
-          <CardTitle>Nome do Ebook</CardTitle>
+      <Card className="shadow-md border-border/40 overflow-hidden">
+        <CardHeader className="bg-muted/30">
+          <CardTitle className="text-xl">Nome do Ebook</CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="ebook-title" className="font-medium">Título do Ebook</Label>
-              <Input
-                id="ebook-title"
-                placeholder="Ex: Guia Completo de Marketing Digital"
-                value={ebookTitle}
-                onChange={(e) => setEbookTitle(e.target.value)}
-              />
-            </div>
+        <CardContent className="p-6 space-y-6">
+          <div className="group relative">
+            <Label 
+              htmlFor="ebook-title" 
+              className="origin-start absolute top-1/2 block -translate-y-1/2 cursor-text px-1 text-sm text-muted-foreground/70 transition-all group-focus-within:pointer-events-none group-focus-within:top-0 group-focus-within:cursor-default group-focus-within:text-xs group-focus-within:font-medium group-focus-within:text-foreground has-[+input:not(:placeholder-shown)]:pointer-events-none has-[+input:not(:placeholder-shown)]:top-0 has-[+input:not(:placeholder-shown)]:cursor-default has-[+input:not(:placeholder-shown)]:text-xs has-[+input:not(:placeholder-shown)]:font-medium has-[+input:not(:placeholder-shown)]:text-foreground"
+            >
+              <span className="inline-flex bg-background px-2">Título do Ebook</span>
+            </Label>
+            <Input
+              id="ebook-title"
+              placeholder=""
+              value={ebookTitle}
+              onChange={(e) => setEbookTitle(e.target.value)}
+              className="shadow-sm shadow-black/5 transition-shadow focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20"
+            />
           </div>
         </CardContent>
-        <CardFooter>
-          <Button
+        <CardFooter className="px-6 py-4 bg-muted/10 border-t border-border/30">
+          <ButtonColorful
             onClick={handleGenerateDescription}
             disabled={!ebookTitle.trim() || isGeneratingDescription}
             className="w-full"
-          >
-            {isGeneratingDescription ? (
-              <SimpleLoading text="Gerando descrição..." />
-            ) : (
-              <>
-                <ArrowRight className="mr-2 h-4 w-4" />
-                Próximo: Gerar Descrição
-              </>
-            )}
-          </Button>
+            label={isGeneratingDescription ? "Gerando descrição..." : "Próximo: Gerar Descrição"}
+            icon={isGeneratingDescription ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+          />
         </CardFooter>
       </Card>
     )
@@ -694,73 +671,72 @@ export default function EbookGenerator() {
   // Renderizar o passo 2: Descrição do Ebook
   const renderStep2 = () => {
     return (
-      <Card className="shadow-sm">
-        <CardHeader>
-          <CardTitle>Configuração do Ebook</CardTitle>
+      <Card className="shadow-md border-border/40 overflow-hidden">
+        <CardHeader className="bg-muted/30">
+          <CardTitle className="text-xl">Configuração do Ebook</CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="space-y-6">
+        <CardContent className="p-6 space-y-6">
+          <div className="group relative">
+            <Label 
+              htmlFor="ebook-description" 
+              className="origin-start absolute top-4 block cursor-text px-1 text-sm text-muted-foreground/70 transition-all group-focus-within:pointer-events-none group-focus-within:top-0 group-focus-within:cursor-default group-focus-within:text-xs group-focus-within:font-medium group-focus-within:text-foreground has-[+textarea:not(:placeholder-shown)]:pointer-events-none has-[+textarea:not(:placeholder-shown)]:top-0 has-[+textarea:not(:placeholder-shown)]:cursor-default has-[+textarea:not(:placeholder-shown)]:text-xs has-[+textarea:not(:placeholder-shown)]:font-medium has-[+textarea:not(:placeholder-shown)]:text-foreground"
+            >
+              <span className="inline-flex bg-background px-2">Descrição do Ebook</span>
+            </Label>
+            <Textarea
+              id="ebook-description"
+              className="min-h-[150px] shadow-sm shadow-black/5 transition-shadow focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20"
+              placeholder=""
+              value={ebookDescription}
+              onChange={(e) => setEbookDescription(e.target.value)}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
+            {/* Seletor de quantidade de páginas */}
             <div className="space-y-2">
-              <Label htmlFor="ebook-description" className="font-medium">Descrição do Ebook</Label>
-              <Textarea
-                id="ebook-description"
-                className="min-h-[150px]"
-                placeholder="Descreva o conteúdo do seu ebook..."
-                value={ebookDescription}
-                onChange={(e) => setEbookDescription(e.target.value)}
-              />
+              <Label htmlFor="page-count" className="text-sm font-medium">Quantidade de Páginas</Label>
+              <Select value={pageCount.toString()} onValueChange={(value) => setPageCount(Number(value))}>
+                <SelectTrigger id="page-count" className="shadow-sm shadow-black/5">
+                  <SelectValue placeholder="Selecione a quantidade de páginas" />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAGE_COUNT_OPTIONS.map((count) => (
+                    <SelectItem key={count} value={count.toString()}>
+                      {count} páginas
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Seletor de quantidade de páginas */}
-              <div className="space-y-2">
-                <Label htmlFor="page-count" className="font-medium">Quantidade de Páginas</Label>
-                <Select value={pageCount.toString()} onValueChange={(value) => setPageCount(Number(value))}>
-                  <SelectTrigger id="page-count">
-                    <SelectValue placeholder="Selecione a quantidade de páginas" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {PAGE_COUNT_OPTIONS.map((count) => (
-                      <SelectItem key={count} value={count.toString()}>
-                        {count} páginas
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Seletor de densidade de conteúdo */}
-              <div className="space-y-2">
-                <Label htmlFor="content-mode" className="font-medium">Densidade de Conteúdo</Label>
-                <Select value={contentMode} onValueChange={setContentMode}>
-                  <SelectTrigger id="content-mode">
-                    <SelectValue placeholder="Selecione a densidade de conteúdo" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="FULL">Completo (mais detalhado)</SelectItem>
-                    <SelectItem value="MEDIUM">Médio (equilibrado)</SelectItem>
-                    <SelectItem value="MINIMAL">Mínimo (menos detalhado)</SelectItem>
-                    <SelectItem value="ULTRA_MINIMAL">Ultra-mínimo (básico)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+            {/* Seletor de densidade de conteúdo */}
+            <div className="space-y-2">
+              <Label htmlFor="content-mode" className="text-sm font-medium">Densidade de Conteúdo</Label>
+              <Select value={contentMode} onValueChange={setContentMode}>
+                <SelectTrigger id="content-mode" className="shadow-sm shadow-black/5">
+                  <SelectValue placeholder="Selecione a densidade de conteúdo" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="FULL">Completo (mais detalhado)</SelectItem>
+                  <SelectItem value="MEDIUM">Médio (equilibrado)</SelectItem>
+                  <SelectItem value="MINIMAL">Mínimo (menos detalhado)</SelectItem>
+                  <SelectItem value="ULTRA_MINIMAL">Ultra-mínimo (básico)</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
         </CardContent>
-        <CardFooter className="flex justify-between">
-          <Button variant="outline" onClick={() => setCurrentStep(1)}>
+        <CardFooter className="flex justify-between px-6 py-4 bg-muted/10 border-t border-border/30">
+          <Button variant="outline" onClick={() => setCurrentStep(1)} className="shadow-sm">
             Voltar
           </Button>
-          <Button onClick={handleGenerateFullEbook} disabled={!ebookDescription.trim() || isGeneratingEbook}>
-            {isGeneratingEbook ? (
-              <SimpleLoading text="Iniciando geração..." />
-            ) : (
-              <>
-                <BookText className="mr-2 h-4 w-4" />
-                Gerar Ebook
-              </>
-            )}
-          </Button>
+          <ButtonColorful
+            onClick={handleGenerateFullEbook}
+            disabled={!ebookDescription.trim() || isGeneratingEbook}
+            label={isGeneratingEbook ? "Iniciando geração..." : "Gerar Ebook"}
+            icon={isGeneratingEbook ? <RefreshCw className="h-4 w-4 animate-spin" /> : <BookText className="h-4 w-4" />}
+          />
         </CardFooter>
       </Card>
     )
@@ -772,55 +748,57 @@ export default function EbookGenerator() {
     const pages = preparePageData()
 
     return (
-      <Card className="shadow-sm">
-        <CardHeader>
-          <CardTitle>Gerando seu Ebook</CardTitle>
+      <Card className="shadow-md border-border/40 overflow-hidden">
+        <CardHeader className="bg-muted/30">
+          <CardTitle className="text-xl">Gerando seu Ebook</CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="space-y-6">
-            {ebookState ? (
-              <GenerationStatus
-                progress={Math.round((ebookState.completedPages / ebookState.totalPages) * 100)}
-                stats={{
-                  processing: ebookState.processingPages,
-                  queued: ebookState.queuedPages,
-                  completed: ebookState.completedPages,
-                  failed: ebookState.failedPages,
-                  total: ebookState.totalPages,
-                }}
-                estimatedTime={estimatedTimeRemaining}
-              />
-            ) : (
-              <div className="flex justify-center py-4">
-                <SimpleLoading text="Iniciando geração do ebook..." />
-              </div>
-            )}
-
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                onClick={handleRefreshStatus}
-                disabled={isPolling}
-              >
-                <RefreshCw className={`mr-2 h-4 w-4 ${isPolling ? 'animate-spin' : ''}`} />
-                Atualizar Status
-              </Button>
-              {/* Botão Continuar Processamento Atualizado */}
-              <Button
-                variant="outline"
-                onClick={handleContinueProcessing}
-                disabled={isStartingWorker || !currentEbookId || ebookState?.status === 'completed' || ebookState?.status === 'processing'}
-              >
-                {isStartingWorker ? (
-                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <Play className="mr-2 h-4 w-4" />
-                )}
-                {isStartingWorker ? "Iniciando..." : "Continuar Processamento"}
-              </Button>
+        <CardContent className="p-6 space-y-6">
+          {ebookState ? (
+            <GenerationStatus
+              progress={Math.round((ebookState.completedPages / ebookState.totalPages) * 100)}
+              stats={{
+                processing: ebookState.processingPages,
+                queued: ebookState.queuedPages,
+                completed: ebookState.completedPages,
+                failed: ebookState.failedPages,
+                total: ebookState.totalPages,
+              }}
+              estimatedTime={estimatedTimeRemaining}
+            />
+          ) : (
+            <div className="flex justify-center py-8">
+              <SimpleLoading text="Iniciando geração do ebook..." />
             </div>
+          )}
 
-            {ebookState && (
+          <div className="flex flex-wrap gap-3 mt-4">
+            <Button
+              variant="outline"
+              onClick={handleRefreshStatus}
+              disabled={isPolling}
+              className="shadow-sm"
+            >
+              <RefreshCw className={`mr-2 h-4 w-4 ${isPolling ? 'animate-spin' : ''}`} />
+              Atualizar Status
+            </Button>
+            
+            <Button
+              variant="outline"
+              onClick={handleContinueProcessing}
+              disabled={isStartingWorker || !currentEbookId || ebookState?.status === 'completed' || ebookState?.status === 'processing'}
+              className="shadow-sm"
+            >
+              {isStartingWorker ? (
+                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="mr-2 h-4 w-4" />
+              )}
+              {isStartingWorker ? "Iniciando..." : "Continuar Processamento"}
+            </Button>
+          </div>
+
+          {ebookState && (
+            <div className="mt-6 border border-border/40 rounded-lg overflow-hidden shadow-sm">
               <PageViewer
                 pages={pages}
                 processingPages={processingPages}
@@ -828,8 +806,8 @@ export default function EbookGenerator() {
                 onSelectPage={setSelectedPageIndex}
                 selectedPageIndex={selectedPageIndex}
               />
-            )}
-          </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     )
@@ -840,9 +818,9 @@ export default function EbookGenerator() {
     const pages = preparePageData()
 
     return (
-      <Card className="shadow-sm">
-        <CardHeader>
-          <CardTitle>
+      <Card className="shadow-md border-border/40 overflow-hidden">
+        <CardHeader className="bg-muted/30">
+          <CardTitle className="text-xl">
             {ebookState?.status === "completed"
               ? "Ebook Gerado com Sucesso"
               : ebookState?.status === "partial"
@@ -850,38 +828,49 @@ export default function EbookGenerator() {
                 : "Falha na Geração do Ebook"}
           </CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="space-y-6">
-            {ebookState && (
-              <div className="border p-4 rounded-md mb-4">
-                <p className="font-medium">{ebookState.title}</p>
-                <p className="text-sm text-muted-foreground mt-1">{ebookState.description}</p>
-                <div className="mt-2 text-sm">
-                  <span className="text-muted-foreground">Status:</span>{" "}
-                  <span>
-                    {ebookState.completedPages} de {ebookState.totalPages} páginas geradas
-                    {ebookState.failedPages > 0 && ` (${ebookState.failedPages} com falha)`}
-                  </span>
-                </div>
+        <CardContent className="p-6 space-y-6">
+          {ebookState && (
+            <div className="border border-border/40 p-5 rounded-lg mb-6 bg-muted/10 shadow-sm">
+              <p className="font-medium text-lg">{ebookState.title}</p>
+              <p className="text-sm text-muted-foreground mt-2">{ebookState.description}</p>
+              <div className="mt-4 text-sm flex items-center gap-2">
+                <span className="text-muted-foreground">Status:</span>{" "}
+                <span className="bg-primary/10 text-primary px-2 py-0.5 rounded-full text-xs font-medium">
+                  {ebookState.completedPages} de {ebookState.totalPages} páginas geradas
+                  {ebookState.failedPages > 0 && ` (${ebookState.failedPages} com falha)`}
+                </span>
               </div>
-            )}
+            </div>
+          )}
 
-            <PageViewer pages={pages} onSelectPage={setSelectedPageIndex} selectedPageIndex={selectedPageIndex} />
+          <div className="border border-border/40 rounded-lg overflow-hidden shadow-sm">
+            <PageViewer 
+              pages={pages} 
+              onSelectPage={setSelectedPageIndex} 
+              selectedPageIndex={selectedPageIndex} 
+            />
           </div>
         </CardContent>
-        <CardFooter className="flex justify-between">
-          <Button variant="outline" onClick={() => setCurrentStep(1)}>
+        <CardFooter className="flex justify-between px-6 py-4 bg-muted/10 border-t border-border/30">
+          <Button variant="outline" onClick={() => setCurrentStep(1)} className="shadow-sm">
             Criar Novo Ebook
           </Button>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={handleSaveToLibrary} disabled={!ebookState || ebookPages.length === 0}>
+          <div className="flex gap-3">
+            <Button 
+              variant="outline" 
+              onClick={handleSaveToLibrary} 
+              disabled={!ebookState || ebookPages.length === 0}
+              className="shadow-sm"
+            >
               <Library className="mr-2 h-4 w-4" />
               Salvar na Biblioteca
             </Button>
-            <Button onClick={handleDownloadEbook} disabled={!ebookState || ebookPages.length === 0}>
-              <Download className="mr-2 h-4 w-4" />
-              Baixar Ebook
-            </Button>
+            <ButtonColorful
+              onClick={handleDownloadEbook}
+              disabled={!ebookState || ebookPages.length === 0}
+              label="Baixar Ebook"
+              icon={<Download className="h-4 w-4" />}
+            />
           </div>
         </CardFooter>
       </Card>
@@ -889,11 +878,11 @@ export default function EbookGenerator() {
   }
 
   return (
-    <div className="container mx-auto py-6">
-      <h1 className="text-2xl font-medium mb-6">Gerador de Ebook</h1>
+    <div className="container mx-auto py-8">
+      <h1 className="text-3xl font-semibold mb-8 text-center">Gerador de Ebook</h1>
 
       {error && (
-        <Alert variant="destructive" className="mb-6">
+        <Alert variant="destructive" className="mb-8 border-destructive/30 shadow-sm">
           <AlertCircle className="h-4 w-4" />
           <AlertTitle>Erro</AlertTitle>
           <AlertDescription className="whitespace-pre-line">{error}</AlertDescription>
@@ -901,7 +890,7 @@ export default function EbookGenerator() {
       )}
 
       {/* Indicador de progresso dos passos */}
-      <StepIndicator steps={STEPS} currentStep={currentStep} className="mb-6" />
+      <StepIndicator steps={STEPS} currentStep={currentStep} className="mb-8" />
 
       {/* Renderizar o passo atual */}
       <div className="max-w-3xl mx-auto">
@@ -912,4 +901,48 @@ export default function EbookGenerator() {
       </div>
     </div>
   )
+}
+
+// Custom Button Component with gradient effect
+interface ButtonColorfulProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  label: string;
+  icon?: React.ReactNode;
+}
+
+function ButtonColorful({
+  className,
+  label,
+  icon,
+  disabled,
+  ...props
+}: ButtonColorfulProps) {
+  return (
+    <Button
+      className={cn(
+        "relative h-10 px-4 overflow-hidden",
+        "bg-zinc-900 dark:bg-zinc-100",
+        "transition-all duration-200",
+        "group",
+        className
+      )}
+      disabled={disabled}
+      {...props}
+    >
+      {/* Gradient background effect */}
+      <div
+        className={cn(
+          "absolute inset-0",
+          "bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500",
+          "opacity-40 group-hover:opacity-80",
+          "blur transition-opacity duration-500"
+        )}
+      />
+
+      {/* Content */}
+      <div className="relative flex items-center justify-center gap-2">
+        <span className="text-white dark:text-zinc-900">{label}</span>
+        {icon && <span className="text-white/90 dark:text-zinc-900/90">{icon}</span>}
+      </div>
+    </Button>
+  );
 }
