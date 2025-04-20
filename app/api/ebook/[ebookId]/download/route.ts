@@ -23,8 +23,9 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
     if (!content) return "";
     // 1. Substituir **texto** por <strong>texto</strong>
     let formatted = content.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
-    // 2. Escapar < e >
-    formatted = formatted.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    // 2. Escapar < e > - REMOVIDO PARA PERMITIR O <strong>
+    // formatted = formatted.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    // TODO: Consider using a proper sanitizer/markdown library if input needs more robust handling
     return formatted;
   };
 
@@ -127,13 +128,13 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
       </style>
     </head>
     <body>
-      {/* --- Página de Capa --- */}
+      <!-- Página de Capa -->
       <div class="cover-page">
-        <h1>${state.title}</h1>
+        <h1>${state.title}</h1> {/* Corrigido: Título dentro do H1 */}
         <p class="description">${state.description}</p>
       </div>
 
-      {/* --- Página de Sumário (sem números de página por enquanto) --- */}
+      <!-- Página de Sumário -->
       <div class="toc-page">
         <h2>Sumário</h2>
         <ul class="toc-list">
@@ -141,11 +142,11 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
         </ul>
       </div>
 
-      {/* --- Conteúdo do Ebook --- */}
-      <div class="content-start"> {/* Marcador para CSS */} 
+      <!-- Conteúdo do Ebook -->
+      <div class="content-start">
         ${pages.map((page, index) => `
-          <h2 id="page-${page.pageIndex}">${page.pageTitle}</h2> {/* Adicionado ID */}
-          <div class="page-content">${formatContent(page.content)}</div> {/* Aplicar formatação */} 
+          <h2 id="page-${page.pageIndex}">${page.pageTitle}</h2>
+          <div class="page-content">${formatContent(page.content)}</div>
         `).join('')}
       </div>
   `;
