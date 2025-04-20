@@ -200,22 +200,45 @@ async function main() {
       currentProcessingItem = null; // Resetar a cada iteração
       console.log(`[Worker] Checking for next job on ${queueName}... (Using rpop)`);
       
-      // Usar rpop (não-bloqueante) em vez de brpop
-      // rpop retorna o elemento ou null se a lista estiver vazia
-      const jobString = await redisClient.rpop(queueName); 
+      // Esperar string OU QueueItem de rpop
+      const jobData = await redisClient.rpop<string | QueueItem>(queueName); 
 
-      if (jobString) { // Se encontrou um job
+      if (jobData) { // Se encontrou um job
+        let parsedData: QueueItem | null = null;
         try {
-          const parsedData = JSON.parse(jobString);
-          // Validar a estrutura do objeto parseado
-          if (parsedData && typeof parsedData === 'object' && 'ebookId' in parsedData && typeof parsedData.ebookId === 'string' && 'pageIndex' in parsedData && typeof parsedData.pageIndex === 'number') {
-              currentProcessingItem = parsedData as QueueItem; // Atribuir com o tipo correto
-              await processQueueItem(currentProcessingItem); // Processa imediatamente
-          } else {
-              console.error("[Worker] Received invalid job data structure after parsing:", parsedData);
+          // Verificar se já é um objeto (auto-parsed?)
+          if (typeof jobData === 'object' && jobData !== null) {
+             // Validar a estrutura do objeto recebido
+             // Com a dica de tipo <string | QueueItem>, TS deve permitir acesso direto aqui
+             if (jobData.ebookId && typeof jobData.ebookId === 'string' && typeof jobData.pageIndex === 'number') {
+                parsedData = jobData; // Usar diretamente
+             } else {
+                console.error("[Worker] Received invalid object structure directly from rpop:", jobData);
+             }
+          } 
+          // Se for uma string, tentar fazer o parse
+          else if (typeof jobData === 'string') {
+            const tempParsed = JSON.parse(jobData) as QueueItem;
+            // Validar a estrutura após parse
+             if (tempParsed && typeof tempParsed === 'object' && tempParsed.ebookId && typeof tempParsed.pageIndex === 'number') {
+                 parsedData = tempParsed;
+             } else {
+                 console.error("[Worker] Invalid job data structure after parsing string:", tempParsed);
+             }
           }
-        } catch (parseError) {
-          console.error("[Worker] Failed to parse JSON from queue:", jobString, parseError);
+           else {
+                // Cobrir outros tipos inesperados, embora improvável com <string | QueueItem>
+                console.error("[Worker] Received unexpected data type from rpop:", typeof jobData);
+           }
+
+          // Processar apenas se parsedData for válido
+          if (parsedData) {
+              currentProcessingItem = parsedData;
+              await processQueueItem(currentProcessingItem);
+          }
+
+        } catch (error) { // Pegar erros do JSON.parse ou outros erros inesperados no bloco try
+          console.error("[Worker] Failed to parse or validate job data:", jobData, error);
         }
       } else {
         // Fila vazia, esperar um pouco antes de verificar novamente
