@@ -424,232 +424,180 @@ export async function getNextQueueItem(): Promise<{ ebookId: string; pageIndex: 
 export async function updatePageStatus(
   ebookId: string,
   pageIndex: number,
-  status: "queued" | "processing" | "completed" | "failed",
+  newStatus: "queued" | "processing" | "completed" | "failed",
   content = "",
   error = "",
 ): Promise<void> {
-  try {
-    // Verificar a conexão com o Redis
-    const isConnected = await checkRedisConnection()
-    if (!isConnected) {
-      console.warn("Não foi possível conectar ao Redis. Abortando atualização.")
-      return
-    }
-
-    // Verificar se o cliente Redis está disponível
-    const client = getRedisClient()
-    if (!client) {
-      console.warn("Cliente Redis não está disponível. Abortando atualização.")
-      return
-    }
-
-    // Obter a página atual
-    const pageKey = `${EBOOK_PAGE_PREFIX}${ebookId}:${pageIndex}`;
-    const pageData = await client.get(pageKey); // Pode retornar string ou objeto
-
-    if (!pageData) {
-      console.warn(`Página ${pageIndex} para o ebook ${ebookId} não encontrada.`)
-      return;
-    }
-
-    // Converter/validar pageData para objeto
-    let page: EbookQueuePage | null = null;
-
-    if (typeof pageData === "object" && pageData !== null) {
-        // Validar minimamente
-         if ('ebookId' in pageData && 'pageIndex' in pageData && 'pageTitle' in pageData) {
-            page = pageData as EbookQueuePage;
-         } else {
-            console.error("Objeto retornado pelo Redis para page data em updatePageStatus é inválido:", pageData);
-         }
-    } else if (typeof pageData === "string") {
-      try {
-        const parsedPage = JSON.parse(pageData) as EbookQueuePage;
-         // Validar minimamente após parse
-         if (parsedPage && parsedPage.ebookId && typeof parsedPage.pageIndex === 'number' && parsedPage.pageTitle) {
-             page = parsedPage;
-         } else {
-             console.error("Dados da página inválidos após parse em updatePageStatus:", parsedPage);
-         }
-      } catch (parseError) {
-        console.error("Erro ao fazer parse dos dados da página (string) em updatePageStatus:", parseError)
-        console.error("Conteúdo recebido string:", pageData)
-      }
-    } else {
-       console.error(`Tipo inesperado recebido para page data em updatePageStatus: ${typeof pageData}`);
-    }
-
-    // Se não conseguimos obter um objeto de página válido, não podemos continuar
-    if (!page) {
-        console.error(`Não foi possível obter dados válidos para a página ${pageIndex} do ebook ${ebookId}. Abortando atualização.`);
-        return;
-    }
-
-    // Atualizar os dados da página (agora 'page' é um objeto EbookQueuePage válido)
-    page.status = status;
-    page.content = content;
-    page.error = error;
-    page.updatedAt = Date.now();
-    // Não incrementar attempts aqui intencionalmente
-
-    // Salvar a página atualizada no Redis
-    await client.set(pageKey, JSON.stringify(page));
-
-    // Atualizar o estado do ebook
-    await updateEbookState(ebookId);
-  } catch (error) {
-    console.error("Erro ao atualizar status da página:", error);
+  const client = getRedisClient();
+  if (!client) {
+    console.error("[updatePageStatus] Redis client not available.");
+    return; // Não podemos fazer nada sem o cliente
   }
-}
 
-// Função auxiliar para atualizar o estado do ebook
-async function updateEbookState(ebookId: string): Promise<void> {
+  const pageKey = `${EBOOK_PAGE_PREFIX}${ebookId}:${pageIndex}`;
+  const stateKey = `${EBOOK_STATE_PREFIX}${ebookId}`;
+
   try {
-    // Obter o estado atual do ebook
-    const ebookState = await getEbookState(ebookId)
+    // 1. Obter os dados atuais da página
+    const currentPageDataString = await client.get<string>(pageKey); // Ler como string
 
-    if (!ebookState) {
-      console.warn(`Ebook ${ebookId} não encontrado.`)
-      return
+    if (!currentPageDataString) {
+      console.error(`[updatePageStatus] Page data not found for key: ${pageKey}`);
+      // Opcional: Tentar atualizar o estado geral mesmo assim? Ou lançar erro?
+      // Por enquanto, vamos logar e continuar para tentar atualizar o estado geral.
+      // return; // Se quisermos parar se a página não existe
     }
 
-    // Verificar se o cliente Redis está disponível
-    const client = getRedisClient()
-    if (!client) {
-      console.warn("Cliente Redis não está disponível. Abortando atualização.")
-      return
-    }
-
-    // Obter todas as páginas do ebook
-    const pages = await getEbookPages(ebookId)
-
-    // Verificar se pages é um array
-    if (!Array.isArray(pages)) {
-      console.error("Erro: pages não é um array:", pages)
-      return
-    }
-
-    // Calcular o novo estado do ebook
-    let completedCount = 0;
-    let processingCount = 0;
-    let queuedCount = 0;
-    let failedCount = 0;
-    const now = Date.now();
-    const PROCESSING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos
-
-    pages.forEach((page) => {
-      if (page.status === "completed") {
-        completedCount++;
-      } else if (page.status === "processing") {
-        // Verificar timeout de processamento
-        if (now - page.updatedAt > PROCESSING_TIMEOUT_MS) {
-          console.warn(`Página ${page.pageIndex} do ebook ${ebookId} excedeu timeout de processamento. Marcando como falha.`);
-          // Idealmente, deveríamos chamar updatePageStatus aqui, mas isso criaria um loop.
-          // Por agora, apenas contamos como falha para o estado geral.
-          failedCount++;
-        } else {
-          processingCount++;
+    let currentPageData: EbookQueuePage | null = null;
+    let previousStatus: EbookQueuePage['status'] | null = null;
+    if (currentPageDataString) {
+        try {
+            currentPageData = JSON.parse(currentPageDataString) as EbookQueuePage;
+            previousStatus = currentPageData.status; // Guardar status anterior
+        } catch (parseError) {
+            console.error(`[updatePageStatus] Failed to parse JSON for page ${pageKey}. Data: '${currentPageDataString}'`, parseError);
+            // Não podemos atualizar a página se não pudermos parseá-la.
+            // Vamos apenas tentar atualizar o estado geral.
+            currentPageData = null;
         }
-      } else if (page.status === "queued") {
-        queuedCount++;
-      } else if (page.status === "failed") {
-        failedCount++;
-      }
-    });
-
-    let ebookStatus: EbookQueueState["status"] = "processing";
-
-    if (failedCount + completedCount === ebookState.totalPages) { // Inclui falhas por timeout
-      ebookStatus = failedCount > 0 ? "partial" : "completed"; // Se tem falhas, é parcial
-      if (failedCount === ebookState.totalPages) ebookStatus = "failed";
-    } else if (queuedCount === ebookState.totalPages) {
-      ebookStatus = "queued";
-    } else if (processingCount > 0 || queuedCount > 0) {
-       ebookStatus = "processing"; // Ainda processando ou esperando
-    } else {
-      // Caso inesperado, talvez todas completas mas cálculo acima falhou?
-      console.warn("Estado inesperado ao calcular status do ebook", {completedCount, processingCount, queuedCount, failedCount, totalPages: ebookState.totalPages});
-      ebookStatus = "partial"; // Default seguro
     }
 
-    // Atualizar o estado do ebook
-    ebookState.status = ebookStatus;
-    ebookState.completedPages = completedCount;
-    ebookState.processingPages = processingCount;
-    ebookState.queuedPages = queuedCount;
-    ebookState.failedPages = failedCount; // Contagem agora inclui timeouts
-    ebookState.updatedAt = now;
 
-    // Salvar o estado atualizado do ebook no Redis
-    await client.set(`${EBOOK_PREFIX}${ebookId}`, JSON.stringify(ebookState))
+    // 2. Atualizar os dados da página (se possível)
+    let updatedPageData: EbookQueuePage | null = null;
+    if (currentPageData) {
+        updatedPageData = {
+            ...currentPageData,
+            status: newStatus,
+            content: newStatus === "completed" ? content : currentPageData.content, // Apenas salva conteúdo no 'completed'
+            error: newStatus === "failed" ? error : "", // Apenas salva erro no 'failed'
+            attempts: newStatus === "failed" ? (currentPageData.attempts || 0) + 1 : currentPageData.attempts, // Incrementa tentativas na falha
+            updatedAt: Date.now(),
+        };
+        // Remover o campo 'error' se não estiver em 'failed' para limpar erros antigos
+        if (newStatus !== "failed") {
+           delete updatedPageData.error;
+        }
+
+        // Salvar a página atualizada
+        try {
+            await client.set(pageKey, JSON.stringify(updatedPageData));
+            console.log(`[updatePageStatus] Updated page ${pageIndex} status to ${newStatus} for ebook ${ebookId}`);
+        } catch (setPageError) {
+             console.error(`[updatePageStatus] Failed to SET updated page data for ${pageKey}`, setPageError);
+             // A atualização do estado geral ainda será tentada abaixo
+        }
+
+    } else {
+        console.warn(`[updatePageStatus] Cannot update page ${pageKey} as current data could not be retrieved or parsed.`);
+    }
+
+
+    // 3. Atualizar o estado geral do ebook no HASH (sempre tentar, mesmo se a página falhou)
+    const now = Date.now();
+    const multi = client.multi(); // Usar MULTI para atomicidade nas atualizações de contadores
+
+    // Atualizar timestamp 'updatedAt' do estado geral
+    multi.hset(stateKey, { updatedAt: now });
+
+    // Ajustar contadores baseado na mudança de status (se o status anterior era conhecido)
+    if (previousStatus && previousStatus !== newStatus && currentPageData) { // Apenas ajustar se o status mudou E a página existia
+      console.log(`[updatePageStatus] Adjusting counters for status change: ${previousStatus} -> ${newStatus}`);
+      // Decrementar contador do status anterior
+      if (previousStatus === "queued") multi.hincrby(stateKey, "queuedPages", -1);
+      if (previousStatus === "processing") multi.hincrby(stateKey, "processingPages", -1);
+      if (previousStatus === "completed") multi.hincrby(stateKey, "completedPages", -1);
+      if (previousStatus === "failed") multi.hincrby(stateKey, "failedPages", -1);
+
+      // Incrementar contador do novo status
+      if (newStatus === "queued") multi.hincrby(stateKey, "queuedPages", 1);
+      if (newStatus === "processing") multi.hincrby(stateKey, "processingPages", 1);
+      if (newStatus === "completed") multi.hincrby(stateKey, "completedPages", 1);
+      if (newStatus === "failed") multi.hincrby(stateKey, "failedPages", 1);
+    } else if (!previousStatus && currentPageData) {
+        // Se a página foi encontrada mas o status anterior não (talvez estado inicial), incrementar o novo status
+        console.log(`[updatePageStatus] Incrementing counter for initial status: ${newStatus}`);
+        if (newStatus === "queued") multi.hincrby(stateKey, "queuedPages", 1);
+        if (newStatus === "processing") multi.hincrby(stateKey, "processingPages", 1);
+        if (newStatus === "completed") multi.hincrby(stateKey, "completedPages", 1);
+        if (newStatus === "failed") multi.hincrby(stateKey, "failedPages", 1);
+    } else {
+         console.warn(`[updatePageStatus] Cannot adjust counters accurately for ${pageKey}. Previous status: ${previousStatus}, Current data exists: ${!!currentPageData}`);
+    }
+
+
+    // Atualizar o status GERAL do ebook para 'processing' se alguma página entrar nesse estado
+    // e o status geral ainda for 'queued'
+    // (Podemos precisar de lógica mais complexa para 'partial', 'completed', 'failed' aqui ou na GET)
+    if (newStatus === 'processing') {
+         multi.hsetnx(stateKey, "status", "processing"); // Define 'processing' apenas se 'status' não existir ou for 'queued'
+         console.log(`[updatePageStatus] Attempted HSETNX for overall status to processing for ${ebookId}`);
+    }
+
+    // Executar a transação
+    try {
+        const txResult = await multi.exec();
+        console.log(`[updatePageStatus] Transaction result for state update of ${ebookId}:`, txResult);
+        if (txResult === null || txResult.some(res => res === null)) { // Verificar se algum comando na transação falhou
+            console.error(`[updatePageStatus] Redis transaction failed for state update of ${ebookId}. Results:`, txResult);
+        }
+    } catch (txError) {
+         console.error(`[updatePageStatus] Error executing Redis transaction for state update of ${ebookId}:`, txError);
+    }
+
+
   } catch (error) {
-    console.error("Erro ao atualizar estado do ebook:", error)
+    console.error(
+      `[updatePageStatus] Unexpected error updating status for page ${pageIndex} of ebook ${ebookId} to ${newStatus}:`,
+      error,
+    );
+    // Não relançar o erro aqui para não parar o worker necessariamente,
+    // mas a falha já foi logada.
   }
 }
 
-// Função para obter os detalhes de uma página específica
+
+// Função para obter os dados de uma página específica (MODIFICADA para parse seguro)
 export async function getEbookPage(
   ebookId: string,
   pageIndex: number,
 ): Promise<EbookQueuePage | null> {
+  const client = getRedisClient();
+  if (!client) {
+    console.error("[getEbookPage] Redis client not available.");
+    return null;
+  }
+  const pageKey = `${EBOOK_PAGE_PREFIX}${ebookId}:${pageIndex}`;
+
   try {
-    // Verificar a conexão com o Redis
-    const isConnected = await checkRedisConnection()
-    if (!isConnected) {
-      console.warn("Não foi possível conectar ao Redis. Retornando null.")
-      return null
-    }
+    const pageDataString = await client.get<string>(pageKey); // Sempre ler como string
 
-    // Verificar se o cliente Redis está disponível
-    const client = getRedisClient()
-    if (!client) {
-      console.warn("Cliente Redis não está disponível. Retornando null.")
-      return null
-    }
-
-    // Obter os dados da página do Redis
-    const pageKey = `${EBOOK_PAGE_PREFIX}${ebookId}:${pageIndex}`; 
-    const pageData = await client.get(pageKey); // Pode retornar string ou objeto
-
-    if (!pageData) {
+    if (!pageDataString) {
+      console.log(`[getEbookPage] No data found for key: ${pageKey}`);
       return null;
     }
 
-    // Verificar se já é um objeto
-    if (typeof pageData === "object" && pageData !== null) {
-        // Validar minimamente
-        if ('ebookId' in pageData && 'pageIndex' in pageData && 'pageTitle' in pageData) {
-            return pageData as EbookQueuePage;
-        } else {
-            console.error("Objeto retornado pelo Redis para page data é inválido:", pageData);
-            return null;
-        }
+    // Tentar fazer o parse seguro
+    try {
+      const pageData = JSON.parse(pageDataString) as EbookQueuePage;
+      // Opcional: Validar se o objeto parseado tem os campos esperados
+      if (typeof pageData === 'object' && pageData !== null && typeof pageData.ebookId === 'string') {
+          return pageData;
+      } else {
+          console.error(`[getEbookPage] Parsed data for ${pageKey} is not a valid EbookQueuePage object.`);
+          return null;
+      }
+    } catch (parseError) {
+      console.error(`[getEbookPage] Failed to parse JSON for key ${pageKey}. Data: '${pageDataString}'`, parseError);
+      return null;
     }
-
-    // Se for string, tentar fazer o parse
-    if (typeof pageData === "string") {
-        try {
-            const parsedPage = JSON.parse(pageData) as EbookQueuePage;
-            // Validar minimamente após parse
-            if (parsedPage && parsedPage.ebookId && typeof parsedPage.pageIndex === 'number' && parsedPage.pageTitle) {
-                return parsedPage;
-            } else {
-                console.error("Dados da página inválidos após parse em getEbookPage:", parsedPage);
-                return null;
-            }
-        } catch (parseError) {
-            console.error(`Erro ao fazer parse dos dados da página ${pageIndex} (string) em getEbookPage:`, parseError);
-            console.error("Conteúdo recebido string:", pageData);
-            return null;
-        }
-    }
-
-     // Se não for nem objeto nem string (inesperado)
-    console.error(`Tipo inesperado recebido para page data: ${typeof pageData}`);
-    return null;
-
   } catch (error) {
-    console.error(`Erro ao obter página ${pageIndex} do ebook ${ebookId}:`, error);
+    console.error(`[getEbookPage] Error fetching page data for key ${pageKey}:`, error);
     return null;
   }
 }
+
+// Função para atualizar o status geral do ebook (MODIFICADA para HASH)
+export async function updateEbookOverallStatus(
+  ebookId: string,
+// ... (rest of the file)

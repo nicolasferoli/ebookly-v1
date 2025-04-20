@@ -3,7 +3,11 @@ import {
   getEbookState, 
   getEbookPages, 
   updatePageStatus,
-  checkRedisConnection // Importar a função de checagem
+  checkRedisConnection,
+  getEbookPage,
+  EBOOK_PAGE_PREFIX,
+  EBOOK_PAGES_PREFIX,
+  type EbookQueuePage // <-- Adicionar tipo aqui
 } from './lib/redis'; 
 import { generateText } from 'ai';
 import { openai } from '@ai-sdk/openai';
