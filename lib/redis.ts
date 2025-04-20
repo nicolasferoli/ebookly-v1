@@ -183,7 +183,6 @@ export async function createEbookQueue(
     }
 
     // Salvar o estado do ebook no Redis como HASH
-    // Convert all values to string for hmset, as Upstash Redis client might require it
     const stateHash = Object.fromEntries(
        Object.entries(ebookState).map(([key, value]) => [key, String(value)])
     );
@@ -202,8 +201,11 @@ export async function createEbookQueue(
         updatedAt: Date.now(),
       }
 
-      // Salvar a página no Redis
-      return client.set(`${EBOOK_PAGE_PREFIX}${ebookId}:${index}`, JSON.stringify(page)).then(() => {
+      // Salvar a página no Redis como HASH
+      const pageHash = Object.fromEntries(
+         Object.entries(page).map(([key, value]) => [key, String(value)])
+      );
+      return client.hmset(`${EBOOK_PAGE_PREFIX}${ebookId}:${index}`, pageHash).then(() => {
         // Adicionar à fila de processamento
         return client.lpush(
           `${EBOOK_PAGES_PREFIX}pages`,
@@ -328,49 +330,48 @@ export async function getEbookPages(ebookId: string): Promise<EbookQueuePage[]> 
     // Criar a lista de todas as chaves de página
     const pageKeys = Array.from({ length: totalPages }, (_, i) => `${EBOOK_PAGE_PREFIX}${ebookId}:${i}`);
 
-    // Usar MGET. A Upstash pode retornar (string | null)[]
-    const results = await client.mget<string[] | EbookQueuePage[]>(...pageKeys);
+    // Usar Pipeline para buscar múltiplos Hashes (HGETALL)
+    const pipeline = client.pipeline();
+    pageKeys.forEach(key => pipeline.hgetall(key));
+    const results = await pipeline.exec<({ [key: string]: string } | null)[]>();
 
     const pages: EbookQueuePage[] = [];
-    results.forEach((pageData, index) => {
+    results.forEach((pageHash, index) => {
       const pageKey = pageKeys[index]; // Obter a chave para logs de erro
-      if (pageData === null || pageData === undefined) {
-         // Explicitamente ignorar nulos/undefined retornados pelo mget
-         // console.log(`[getEbookPages] Dado nulo/undefined para chave ${pageKey}`);
+      if (pageHash === null || Object.keys(pageHash).length === 0) {
+         console.warn(`[getEbookPages] Hash nulo ou vazio retornado para chave ${pageKey}`);
          return; 
       }
       
       try {
         let parsedPage: EbookQueuePage | null = null;
 
-        // Check if it's already an object (auto-parsed by client?)
-        if (typeof pageData === 'object' && pageData !== null) {
-           // Basic validation to ensure it looks like our page object
-           if (pageData.ebookId && typeof pageData.pageIndex === 'number') {
-              parsedPage = pageData as EbookQueuePage;
-              // Optional: Log that we received an object
-              // console.log(`[getEbookPages] Received pre-parsed object for key ${pageKey}`);
-           } else {
-              console.error(`[getEbookPages] Received invalid object for key ${pageKey}:`, pageData);
-              return; // Skip invalid object
-           }
-        } 
-        // Check if it's a non-empty string that needs parsing
-        else if (typeof pageData === 'string' && pageData.trim() !== '') {
-          try {
-              parsedPage = JSON.parse(pageData) as EbookQueuePage;
-          } catch (parseError) {
-              console.error(`[getEbookPages] Erro no JSON.parse da chave ${pageKey}:`, parseError, "Data String:", pageData);
-              return; // Skip if parsing fails
-          }
-        } 
-        // Handle empty strings or unexpected types
-        else {
-            console.warn(`[getEbookPages] Received empty string or unexpected type (${typeof pageData}) for key ${pageKey}. Skipping.`);
-            return; // Skip empty strings or other types
+        // Converter o pageHash (resultado do hgetall)
+        try {
+             parsedPage = {
+                ebookId: pageHash.ebookId,
+                pageIndex: parseInt(pageHash.pageIndex, 10),
+                pageTitle: pageHash.pageTitle,
+                status: pageHash.status as EbookQueuePage['status'],
+                content: pageHash.content || "",
+                error: pageHash.error || undefined,
+                attempts: parseInt(pageHash.attempts || "0", 10),
+                createdAt: parseInt(pageHash.createdAt, 10),
+                updatedAt: parseInt(pageHash.updatedAt, 10)
+            };
+
+            // Validar conversões numéricas essenciais
+             if (isNaN(parsedPage.pageIndex) || isNaN(parsedPage.attempts) || isNaN(parsedPage.createdAt) || isNaN(parsedPage.updatedAt)) {
+                console.error(`[getEbookPages] Falha ao converter números do hash para ${pageKey}. Hash:`, pageHash);
+                throw new Error("Invalid numeric data in page hash");
+             }
+
+        } catch (conversionError) {
+             console.error(`[getEbookPages] Erro ao converter hash para ${pageKey}. Hash:`, pageHash, conversionError);
+             return; // Pular esta página se a conversão falhar
         }
 
-        // Validate the final parsed page object
+        // Validate the final parsed page object (redundante após conversão acima, mas seguro)
         if (parsedPage && parsedPage.ebookId && typeof parsedPage.pageIndex === 'number' && parsedPage.pageTitle) {
             pages.push(parsedPage);
         } else {
@@ -378,7 +379,7 @@ export async function getEbookPages(ebookId: string): Promise<EbookQueuePage[]> 
         }
 
       } catch (processingError) { // Catch any other unexpected errors during processing
-        console.error(`[getEbookPages] Erro inesperado ao processar chave ${pageKey}:`, processingError, "Raw Data:", pageData);
+        console.error(`[getEbookPages] Erro inesperado ao processar chave ${pageKey}:`, processingError, "Raw Data:", pageHash);
       }
     });
 
@@ -468,62 +469,74 @@ export async function updatePageStatus(
   const stateKey = `${EBOOK_STATE_PREFIX}${ebookId}`;
 
   try {
-    // 1. Obter os dados atuais da página
-    const currentPageDataString = await client.get<string>(pageKey); // Ler como string
+    // 1. Obter os dados atuais da página usando HGETALL
+    const currentPageHash = await client.hgetall<{ [key: string]: string }>(pageKey);
 
-    if (!currentPageDataString) {
-      console.error(`[updatePageStatus] Page data not found for key: ${pageKey}`);
-      // Opcional: Tentar atualizar o estado geral mesmo assim? Ou lançar erro?
-      // Por enquanto, vamos logar e continuar para tentar atualizar o estado geral.
-      // return; // Se quisermos parar se a página não existe
+    if (!currentPageHash || Object.keys(currentPageHash).length === 0) {
+      console.warn(`[updatePageStatus] Page hash not found or empty for key: ${pageKey}`);
+      // Não podemos prosseguir sem os dados atuais para atualizar corretamente
+      // Poderíamos talvez criar uma página aqui se não existir, mas é mais seguro parar.
+       return; 
     }
 
     let currentPageData: EbookQueuePage | null = null;
     let previousStatus: EbookQueuePage['status'] | null = null;
-    if (currentPageDataString) {
-        try {
-            currentPageData = JSON.parse(currentPageDataString) as EbookQueuePage;
-            previousStatus = currentPageData.status; // Guardar status anterior
-        } catch (parseError) {
-            console.error(`[updatePageStatus] Failed to parse JSON for page ${pageKey}. Data: '${currentPageDataString}'`, parseError);
-            // Não podemos atualizar a página se não pudermos parseá-la.
-            // Vamos apenas tentar atualizar o estado geral.
-            currentPageData = null;
-        }
-    }
 
-
-    // 2. Atualizar os dados da página (se possível)
-    let updatedPageData: EbookQueuePage | null = null;
-    if (currentPageData) {
-        updatedPageData = {
-            ...currentPageData,
-            status: newStatus,
-            content: newStatus === "completed" ? content : currentPageData.content, // Apenas salva conteúdo no 'completed'
-            error: newStatus === "failed" ? error : "", // Apenas salva erro no 'failed'
-            attempts: newStatus === "failed" ? (currentPageData.attempts || 0) + 1 : currentPageData.attempts, // Incrementa tentativas na falha
-            updatedAt: Date.now(),
+    // Converter hash para objeto EbookQueuePage
+    try {
+        currentPageData = {
+            ebookId: currentPageHash.ebookId,
+            pageIndex: parseInt(currentPageHash.pageIndex, 10),
+            pageTitle: currentPageHash.pageTitle,
+            status: currentPageHash.status as EbookQueuePage['status'],
+            content: currentPageHash.content || "", // Default content to empty string if missing
+            error: currentPageHash.error || undefined,
+            attempts: parseInt(currentPageHash.attempts || "0", 10),
+            createdAt: parseInt(currentPageHash.createdAt, 10),
+            updatedAt: parseInt(currentPageHash.updatedAt, 10)
         };
-        // Remover o campo 'error' se não estiver em 'failed' para limpar erros antigos
-        if (newStatus !== "failed") {
-           delete updatedPageData.error;
-        }
+        previousStatus = currentPageData.status;
 
-        // Salvar a página atualizada
-        try {
-            await client.set(pageKey, JSON.stringify(updatedPageData));
-            console.log(`[updatePageStatus] Updated page ${pageIndex} status to ${newStatus} for ebook ${ebookId}`);
-        } catch (setPageError) {
-             console.error(`[updatePageStatus] Failed to SET updated page data for ${pageKey}`, setPageError);
-             // A atualização do estado geral ainda será tentada abaixo
-        }
+        // Validar conversões numéricas essenciais
+         if (isNaN(currentPageData.pageIndex) || isNaN(currentPageData.attempts) || isNaN(currentPageData.createdAt) || isNaN(currentPageData.updatedAt)) {
+            console.error(`[updatePageStatus] Failed to parse numbers from page hash for ${pageKey}. Hash:`, currentPageHash);
+            throw new Error("Invalid numeric data in page hash");
+         }
 
-    } else {
-        console.warn(`[updatePageStatus] Cannot update page ${pageKey} as current data could not be retrieved or parsed.`);
+    } catch (conversionError) {
+        console.error(`[updatePageStatus] Failed to convert page hash to object for ${pageKey}. Hash:`, currentPageHash, conversionError);
+        return; // Parar se a conversão falhar
     }
 
+    // 2. Preparar os dados da página atualizada 
+    // (currentPageData agora deve ser válido se chegou aqui)
+    const updatedPageData: EbookQueuePage = {
+        ...currentPageData,
+        status: newStatus,
+        content: newStatus === "completed" ? content : currentPageData.content,
+        error: newStatus === "failed" ? error : undefined,
+        attempts: newStatus === "failed" ? (currentPageData.attempts || 0) + 1 : currentPageData.attempts,
+        updatedAt: Date.now(),
+    };
+    // Remover o campo 'error' se não estiver em 'failed'
+    if (newStatus !== "failed") {
+       delete updatedPageData.error;
+    }
 
-    // 3. Atualizar o estado geral do ebook no HASH (sempre tentar, mesmo se a página falhou)
+    // 3. Salvar a página atualizada como HASH usando HMSET
+    try {
+        const updatedPageHash = Object.fromEntries(
+            Object.entries(updatedPageData).filter(([_, value]) => value !== undefined).map(([key, value]) => [key, String(value)])
+        );
+        await client.hmset(pageKey, updatedPageHash); // << Use HMSET
+        console.log(`[updatePageStatus] Updated page ${pageIndex} status to ${newStatus} for ebook ${ebookId}`);
+    } catch (setPageError) {
+         console.error(`[updatePageStatus] Failed to HMSET updated page data for ${pageKey}`, setPageError);
+         // Considerar se deve parar aqui ou continuar para atualizar o estado geral
+         return; // Parar aqui por segurança
+    }
+
+    // 4. Atualizar o estado geral do ebook no HASH (usando multi)
     const now = Date.now();
     const multi = client.multi(); // Usar MULTI para atomicidade nas atualizações de contadores
 
@@ -555,7 +568,6 @@ export async function updatePageStatus(
          console.warn(`[updatePageStatus] Cannot adjust counters accurately for ${pageKey}. Previous status: ${previousStatus}, Current data exists: ${!!currentPageData}`);
     }
 
-
     // Atualizar o status GERAL do ebook para 'processing' se alguma página entrar nesse estado
     // e o status geral ainda for 'queued'
     // (Podemos precisar de lógica mais complexa para 'partial', 'completed', 'failed' aqui ou na GET)
@@ -575,7 +587,6 @@ export async function updatePageStatus(
          console.error(`[updatePageStatus] Error executing Redis transaction for state update of ${ebookId}:`, txError);
     }
 
-
   } catch (error) {
     console.error(
       `[updatePageStatus] Unexpected error updating status for page ${pageIndex} of ebook ${ebookId} to ${newStatus}:`,
@@ -585,7 +596,6 @@ export async function updatePageStatus(
     // mas a falha já foi logada.
   }
 }
-
 
 // Função para obter os dados de uma página específica (MODIFICADA para parse seguro)
 export async function getEbookPage(
@@ -600,25 +610,39 @@ export async function getEbookPage(
   const pageKey = `${EBOOK_PAGE_PREFIX}${ebookId}:${pageIndex}`;
 
   try {
-    const pageDataString = await client.get<string>(pageKey); // Sempre ler como string
+    // const pageDataString = await client.get<string>(pageKey); // << Original GET
+    const pageHash = await client.hgetall<{ [key: string]: string }>(pageKey); // << Use HGETALL
 
-    if (!pageDataString) {
-      console.log(`[getEbookPage] No data found for key: ${pageKey}`);
+    // if (!pageDataString) { // << Original Check
+    if (!pageHash || Object.keys(pageHash).length === 0) {
+      console.log(`[getEbookPage] No data found or hash empty for key: ${pageKey}`);
       return null;
     }
 
-    // Tentar fazer o parse seguro
+    // Tentar converter o hash para EbookQueuePage
     try {
-      const pageData = JSON.parse(pageDataString) as EbookQueuePage;
-      // Opcional: Validar se o objeto parseado tem os campos esperados
-      if (typeof pageData === 'object' && pageData !== null && typeof pageData.ebookId === 'string') {
+      // const pageData = JSON.parse(pageDataString) as EbookQueuePage; // << Original Parse
+       const pageData: EbookQueuePage = {
+            ebookId: pageHash.ebookId,
+            pageIndex: parseInt(pageHash.pageIndex, 10),
+            pageTitle: pageHash.pageTitle,
+            status: pageHash.status as EbookQueuePage['status'],
+            content: pageHash.content || "",
+            error: pageHash.error || undefined,
+            attempts: parseInt(pageHash.attempts || "0", 10),
+            createdAt: parseInt(pageHash.createdAt, 10),
+            updatedAt: parseInt(pageHash.updatedAt, 10)
+        };
+
+      // Validar se o objeto parseado tem os campos esperados e se números são válidos
+      if (pageData && pageData.ebookId && typeof pageData.pageIndex === 'number' && !isNaN(pageData.pageIndex) && !isNaN(pageData.createdAt)) {
           return pageData;
       } else {
-          console.error(`[getEbookPage] Parsed data for ${pageKey} is not a valid EbookQueuePage object.`);
+          console.error(`[getEbookPage] Converted hash data for ${pageKey} is not a valid EbookQueuePage object.`);
           return null;
       }
-    } catch (parseError) {
-      console.error(`[getEbookPage] Failed to parse JSON for key ${pageKey}. Data: '${pageDataString}'`, parseError);
+    } catch (conversionError) {
+      console.error(`[getEbookPage] Failed to convert hash for key ${pageKey}. Hash:`, pageHash, conversionError);
       return null;
     }
   } catch (error) {
