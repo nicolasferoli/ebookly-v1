@@ -326,44 +326,56 @@ export async function getEbookPages(ebookId: string): Promise<EbookQueuePage[]> 
     const pageKeys = Array.from({ length: totalPages }, (_, i) => `${EBOOK_PAGE_PREFIX}${ebookId}:${i}`);
 
     // Usar MGET. A Upstash pode retornar (string | null)[]
-    const results = await client.mget<string[]>(...pageKeys);
+    const results = await client.mget<string[] | EbookQueuePage[]>(...pageKeys);
 
     const pages: EbookQueuePage[] = [];
-    results.forEach((pageDataString, index) => {
+    results.forEach((pageData, index) => {
       const pageKey = pageKeys[index]; // Obter a chave para logs de erro
-      if (pageDataString === null || pageDataString === undefined) {
+      if (pageData === null || pageData === undefined) {
          // Explicitamente ignorar nulos/undefined retornados pelo mget
          // console.log(`[getEbookPages] Dado nulo/undefined para chave ${pageKey}`);
          return; 
       }
       
-      // Adicionar try-catch em volta do parse
       try {
-        // Garantir que é uma string antes de tentar parse
-        if (typeof pageDataString !== 'string') {
-            console.error(`[getEbookPages] Tipo inesperado (${typeof pageDataString}) recebido para chave ${pageKey}. Esperado string.`);
-            return; // Pular este item
-        }
-        
-        // Se for string vazia, tratar como inválido ou pular?
-        if (pageDataString.trim() === '') {
-            console.warn(`[getEbookPages] String vazia recebida para chave ${pageKey}. Pulando.`);
-            return; // Pular strings vazias
+        let parsedPage: EbookQueuePage | null = null;
+
+        // Check if it's already an object (auto-parsed by client?)
+        if (typeof pageData === 'object' && pageData !== null) {
+           // Basic validation to ensure it looks like our page object
+           if (pageData.ebookId && typeof pageData.pageIndex === 'number') {
+              parsedPage = pageData as EbookQueuePage;
+              // Optional: Log that we received an object
+              // console.log(`[getEbookPages] Received pre-parsed object for key ${pageKey}`);
+           } else {
+              console.error(`[getEbookPages] Received invalid object for key ${pageKey}:`, pageData);
+              return; // Skip invalid object
+           }
+        } 
+        // Check if it's a non-empty string that needs parsing
+        else if (typeof pageData === 'string' && pageData.trim() !== '') {
+          try {
+              parsedPage = JSON.parse(pageData) as EbookQueuePage;
+          } catch (parseError) {
+              console.error(`[getEbookPages] Erro no JSON.parse da chave ${pageKey}:`, parseError, "Data String:", pageData);
+              return; // Skip if parsing fails
+          }
+        } 
+        // Handle empty strings or unexpected types
+        else {
+            console.warn(`[getEbookPages] Received empty string or unexpected type (${typeof pageData}) for key ${pageKey}. Skipping.`);
+            return; // Skip empty strings or other types
         }
 
-        const parsedPage = JSON.parse(pageDataString) as EbookQueuePage;
-        
-        // Validar minimamente após parse
+        // Validate the final parsed page object
         if (parsedPage && parsedPage.ebookId && typeof parsedPage.pageIndex === 'number' && parsedPage.pageTitle) {
             pages.push(parsedPage);
         } else {
-            console.error(`[getEbookPages] Dados da página inválidos após parse para chave ${pageKey}:`, parsedPage);
+            console.error(`[getEbookPages] Dados da página inválidos após processing para chave ${pageKey}:`, parsedPage);
         }
 
-      } catch (parseError) {
-        // Pegar erros do JSON.parse
-        console.error(`[getEbookPages] Erro no JSON.parse da chave ${pageKey}:`, parseError, "Data String:", pageDataString);
-        // Continuar para o próximo item em vez de quebrar o loop
+      } catch (processingError) { // Catch any other unexpected errors during processing
+        console.error(`[getEbookPages] Erro inesperado ao processar chave ${pageKey}:`, processingError, "Raw Data:", pageData);
       }
     });
 
