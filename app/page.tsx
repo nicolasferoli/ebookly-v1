@@ -1,12 +1,12 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { BookText, Download, AlertCircle, ArrowRight, Database, RefreshCw, Library, Play } from "lucide-react"
+import { Card, CardContent, CardFooter, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { BookText, Download, AlertCircle, ArrowRight, Database, RefreshCw, Library, Play, Sparkles, Settings, FileText, Eye } from "lucide-react"
 import { getContentModes, getCurrentContentMode } from "@/lib/ebook-generator"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -16,6 +16,12 @@ import { GenerationStatus } from "@/components/generation-status"
 import { PageViewer } from "@/components/page-viewer"
 import { SimpleLoading } from "@/components/simple-loading"
 import { cn } from "@/lib/utils"
+import { motion, AnimatePresence } from "framer-motion"
+import { useRouter } from 'next/navigation'
+import { zodResolver } from "@hookform/resolvers/zod"
+import { useForm, Controller } from "react-hook-form"
+import { z } from "zod"
+import { Progress } from "@/components/ui/progress"
 
 // Tempo médio estimado por página em segundos (varia conforme o modo de conteúdo)
 const ESTIMATED_TIME_PER_PAGE = {
@@ -34,915 +40,582 @@ const PAGE_COUNT_OPTIONS = [5, 10, 15, 20, 30, 40, 50]
 // Passos do processo
 const STEPS = ["Nome", "Configuração", "Geração", "Conclusão"]
 
+const MAX_CHARS = 10000
+
+const ebookSchema = z.object({
+  prompt: z.string().min(10, "O prompt precisa ter pelo menos 10 caracteres.").max(MAX_CHARS, `O prompt não pode exceder ${MAX_CHARS} caracteres.`),
+  author: z.string().min(2, "O nome do autor precisa ter pelo menos 2 caracteres.").max(100, "O nome do autor não pode exceder 100 caracteres."),
+  title: z.string().min(3, "O título precisa ter pelo menos 3 caracteres.").max(150, "O título não pode exceder 150 caracteres."),
+  targetAudience: z.string().min(5, "O público alvo precisa ter pelo menos 5 caracteres.").max(200, "O público alvo não pode exceder 200 caracteres."),
+  writingStyle: z.string().min(5, "O estilo de escrita precisa ter pelo menos 5 caracteres.").max(150, "O estilo de escrita não pode exceder 150 caracteres."),
+})
+
+type EbookFormData = z.infer<typeof ebookSchema>
+
+type GenerationStatus = "idle" | "generating" | "success" | "error"
+type Stage = "prompt" | "details" | "generating" | "result"
+
 export default function EbookGenerator() {
-  // Estados principais
-  const [ebookTitle, setEbookTitle] = useState("")
-  const [ebookDescription, setEbookDescription] = useState("")
-  const [isGeneratingDescription, setIsGeneratingDescription] = useState(false)
-  const [isGeneratingEbook, setIsGeneratingEbook] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [contentMode, setContentMode] = useState<string>("MEDIUM")
-  const [currentStep, setCurrentStep] = useState<number>(1)
-  const [pageCount, setPageCount] = useState<number>(15) // Valor padrão: 15 páginas
+  const [status, setStatus] = useState<GenerationStatus>("idle")
+  const [progress, setProgress] = useState(0)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [generatedEbookId, setGeneratedEbookId] = useState<string | null>(null)
+  const [stage, setStage] = useState<Stage>("prompt")
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(0)
+  const router = useRouter()
 
-  // Estados para o sistema de filas
-  const [currentEbookId, setCurrentEbookId] = useState<string | null>(null)
-  const [ebookState, setEbookState] = useState<EbookQueueState | null>(null)
-  const [ebookPages, setEbookPages] = useState<{ index: number; content: string }[]>([])
-  const [selectedPageIndex, setSelectedPageIndex] = useState<number | null>(null)
-  const [isPolling, setIsPolling] = useState(false)
-  const [estimatedTimeRemaining, setEstimatedTimeRemaining] = useState<string>("")
+  const {
+    register: registerFormField,
+    handleSubmit,
+    control,
+    watch,
+    formState: { errors, isValid: isFormValid, dirtyFields },
+    trigger,
+    getValues,
+    reset,
+  } = useForm<EbookFormData>({
+    resolver: zodResolver(ebookSchema),
+    mode: "onChange",
+    defaultValues: {
+      prompt: "",
+      author: "",
+      title: "",
+      targetAudience: "Leitores interessados no tópico [Tópico Principal]",
+      writingStyle: "Informativo e acessível",
+    },
+  })
 
-  // Adicionar estado para verificação do Redis
-  const [isCheckingRedis, setIsCheckingRedis] = useState(false)
-  const [redisStatus, setRedisStatus] = useState<{
-    connected: boolean
-    redisUrl: string
-    redisToken: string
-    envInfo?: { [key: string]: string }
-    helpMessage?: string
-  } | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
 
-  // Referências
-  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null)
-  const generationStartTimeRef = useRef<number>(0)
+  const handleWebSocket = useCallback((ebookId: string) => {
+    if (wsRef.current) {
+      wsRef.current.close()
+    }
 
-  // Modos de conteúdo disponíveis
-  const contentModes = getContentModes()
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:"
+    const wsUrl = `${wsProtocol}//${window.location.host}/api/ws`
 
-  // Novo estado para feedback
-  const [isStartingWorker, setIsStartingWorker] = useState(false)
+    console.log("Connecting WebSocket to:", wsUrl)
+    wsRef.current = new WebSocket(wsUrl)
 
-  // Atualizar o modo de conteúdo quando mudar
-  useEffect(() => {
-    const currentMode = getCurrentContentMode()
-    if (currentMode !== contentMode) {
-      setContentMode(currentMode)
+    wsRef.current.onopen = () => {
+      console.log("WebSocket Connected")
+      wsRef.current?.send(JSON.stringify({ type: 'register', ebookId }))
+      setProgress(5)
+    }
+
+    wsRef.current.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data)
+        console.log("WebSocket Message Received:", message)
+        if (message.ebookId !== ebookId) return
+
+        if (message.type === "progress") {
+          setProgress(message.progress)
+          setCurrentPage(message.currentPage || 1)
+          setTotalPages(message.totalPages || 0)
+        } else if (message.type === "complete") {
+          setStatus("success")
+          setProgress(100)
+          setGeneratedEbookId(ebookId)
+          wsRef.current?.close()
+        } else if (message.type === "error") {
+          setStatus("error")
+          setErrorMsg(message.error || "Ocorreu um erro desconhecido.")
+          setProgress(0)
+          wsRef.current?.close()
+        }
+      } catch (e) {
+        console.error("Failed to parse WebSocket message or handle update:", e)
+        setErrorMsg("Erro ao processar atualização de status.")
+        setStatus("error")
+      }
+    }
+
+    wsRef.current.onerror = (error) => {
+      console.error("WebSocket Error:", error)
+      setErrorMsg("Erro na conexão de status em tempo real.")
+      setStatus("error")
+      setProgress(0)
+    }
+
+    wsRef.current.onclose = (event) => {
+      console.log("WebSocket Disconnected:", event.reason, event.code)
+      wsRef.current = null
     }
   }, [])
 
-  // Adicionar useEffect para iniciar/parar polling quando necessário
   useEffect(() => {
-    if (currentEbookId && (isPolling || ebookState?.status === "processing" || ebookState?.status === "queued")) {
-      startPolling()
-    } else {
-      stopPolling()
+    return () => {
+      wsRef.current?.close()
     }
+  }, [])
 
-    return () => stopPolling()
-  }, [currentEbookId, isPolling, ebookState?.status])
-
-  // Atualizar a estimativa de tempo restante
-  useEffect(() => {
-    if (!ebookState || !generationStartTimeRef.current) return
-
-    const updateEstimatedTime = () => {
-      const elapsedSeconds = (Date.now() - generationStartTimeRef.current) / 1000
-      const completedPages = ebookState.completedPages
-
-      if (completedPages === 0) return "Calculando..."
-
-      // Calcular o tempo médio por página com base no progresso atual
-      const avgTimePerPage = elapsedSeconds / completedPages
-
-      // Estimar o tempo restante
-      const remainingPages = ebookState.queuedPages + ebookState.processingPages
-      const estimatedRemainingSeconds = remainingPages * avgTimePerPage
-
-      // Formatar o tempo restante
-      if (estimatedRemainingSeconds < 60) {
-        return `${Math.ceil(estimatedRemainingSeconds)} segundos restantes`
-      } else if (estimatedRemainingSeconds < 3600) {
-        return `${Math.ceil(estimatedRemainingSeconds / 60)} minutos restantes`
-      } else {
-        const hours = Math.floor(estimatedRemainingSeconds / 3600)
-        const minutes = Math.ceil((estimatedRemainingSeconds % 3600) / 60)
-        return `${hours}h ${minutes}m restantes`
-      }
-    }
-
-    const timer = setInterval(() => {
-      setEstimatedTimeRemaining(updateEstimatedTime())
-    }, 5000)
-
-    setEstimatedTimeRemaining(updateEstimatedTime())
-
-    return () => clearInterval(timer)
-  }, [ebookState])
-
-  // Função para iniciar o polling
-  const startPolling = () => {
-    if (pollingIntervalRef.current) return
-
-    // Fazer a primeira atualização imediatamente
-    updateEbookStatus()
-
-    // Configurar o intervalo de atualização
-    pollingIntervalRef.current = setInterval(updateEbookStatus, STATUS_UPDATE_INTERVAL)
-    setIsPolling(true)
-  }
-
-  // Função para parar o polling
-  const stopPolling = () => {
-    if (pollingIntervalRef.current) {
-      clearInterval(pollingIntervalRef.current)
-      pollingIntervalRef.current = null
-    }
-    setIsPolling(false)
-  }
-
-  // Função para atualizar o status do ebook
-  const updateEbookStatus = async () => {
-    if (!currentEbookId) return
+  const onSubmit = async (data: EbookFormData) => {
+    console.log("Form Data Submitted:", data)
+    setStatus("generating")
+    setStage("generating")
+    setProgress(0)
+    setErrorMsg(null)
+    setGeneratedEbookId(null)
 
     try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 segundos de timeout
-
-      try {
-        const response = await fetch(`/api/ebook?id=${currentEbookId}`, {
-          signal: controller.signal,
-        }).finally(() => {
-          clearTimeout(timeoutId)
-        })
-
-        // Verificar se a resposta é OK
-        if (!response.ok) {
-          // Tentar obter o texto da resposta para diagnóstico
-          let errorMessage = "Failed to fetch ebook status"
-          try {
-            const errorData = await response.json()
-            errorMessage = errorData.error || errorMessage
-
-            // Se o ebook não foi encontrado, podemos tentar reiniciar o processo
-            if (errorData.error === "Ebook not found" && currentStep === 3) {
-              console.warn("Ebook não encontrado, voltando para o passo 2")
-              setCurrentStep(2)
-              setCurrentEbookId(null)
-              setEbookState(null)
-              setEbookPages([])
-              stopPolling()
-            }
-          } catch (jsonError) {
-            // Se não for JSON, tentar obter o texto
-            try {
-              const errorText = await response.text()
-              errorMessage = `${errorMessage}: ${errorText.substring(0, 100)}...`
-            } catch (textError) {
-              // Se não conseguir obter o texto, usar o status
-              errorMessage = `${errorMessage}: Status ${response.status}`
-            }
-          }
-          throw new Error(errorMessage)
-        }
-
-        // Tentar fazer o parse do JSON com tratamento de erro
-        let data
-        try {
-          data = await response.json()
-        } catch (parseError) {
-          console.error("Error parsing ebook status JSON:", parseError)
-          // Verificar se parseError é um Error antes de acessar message
-          const errorMsg = parseError instanceof Error ? parseError.message : String(parseError)
-          throw new Error(`Failed to parse ebook status: ${errorMsg}`)
-        }
-
-        // Atualizar o estado
-        setEbookState(data.state)
-        setEbookPages(data.pages || []) // Garantir que pages seja sempre um array
-
-        // Parar o polling se o estado for final
-        if (data.state.status === "completed" || data.state.status === "failed") {
-          stopPolling()
-          // Se completou, avançar para o passo 4
-          if (data.state.status === "completed") {
-              setCurrentStep(4)
-              setSelectedPageIndex(0) // Selecionar a primeira página por padrão
-          }
-        }
-
-      } catch (fetchError) {
-        // Verificar se fetchError é um Error antes de acessar message
-        if (fetchError instanceof Error && fetchError.name === 'AbortError') {
-          console.warn('Fetch aborted (timeout)');
-          setError("Timeout ao buscar status do ebook. Verifique sua conexão ou tente novamente.");
-        } else {
-           console.error("Error fetching ebook status:", fetchError);
-           const errorMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
-           setError(`Erro ao buscar status do ebook: ${errorMsg}`);
-        }
-      }
-    } catch (error) {
-      console.error("Unhandled error in updateEbookStatus:", error)
-      // Verificar se error é um Error antes de acessar message
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      setError(`Erro inesperado ao atualizar status: ${errorMsg}`)
-    }
-  }
-
-  // Função para iniciar o worker com melhor tratamento de erros
-  const startWorker = async (count = 5) => {
-    try {
-      // Adicionar um timeout para evitar que a requisição fique presa
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 15000) // 15 segundos de timeout
-
-      try {
-        const response = await fetch(`/api/start-worker?count=${count}`, {
-          signal: controller.signal,
-        }).finally(() => {
-          clearTimeout(timeoutId)
-        })
-
-        // Verificar se a resposta é OK
-        if (!response.ok) {
-          // Tentar obter o texto da resposta para diagnóstico
-          let errorMessage = `Error starting worker: Status ${response.status}`
-          try {
-            const errorText = await response.text()
-            errorMessage = `${errorMessage} - ${errorText.substring(0, 100)}...`
-          } catch (textError) {
-            // Se não conseguir obter o texto, usar apenas o status
-          }
-          console.error(errorMessage)
-          return false
-        }
-
-        // Tentar fazer o parse do JSON com tratamento de erro
-        try {
-          const data = await response.json()
-          console.log("Worker iniciado com sucesso:", data)
-          return data.success
-        } catch (jsonError) {
-          console.error("Error parsing worker response:", jsonError)
-          return false
-        }
-      } catch (fetchError) {
-        // Se for um erro de timeout, informar
-        if (fetchError instanceof Error && fetchError.name === "AbortError") {
-          console.warn("Timeout ao iniciar worker, tentando novamente...")
-          // Tentar novamente com menos páginas
-          return startWorker(Math.max(1, Math.floor(count / 2)))
-        }
-
-        // Adicionar log para outros erros de fetch antes de relançar
-        console.error("Fetch error in startWorker:", fetchError); 
-        throw fetchError // Relançar para ser pego pelo catch externo
-      }
-    } catch (error) {
-      console.error("Error starting worker:", error)
-      return false
-    }
-  }
-
-  // Função para verificar a conexão com o Redis
-  const checkRedisConnection = async () => {
-    setIsCheckingRedis(true)
-    setError(null)
-
-    try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 segundos de timeout
-
-      const response = await fetch("/api/check-redis", {
-        signal: controller.signal,
-      }).finally(() => {
-        clearTimeout(timeoutId)
-      })
-
-      // Verificar se a resposta é OK
-      if (!response.ok) {
-        // Tentar obter o texto da resposta para diagnóstico
-        let errorText = "Erro desconhecido"
-        try {
-          const errorData = await response.json()
-          errorText = errorData.error || `Erro na API: Status ${response.status}`
-        } catch (e) {
-          try {
-            errorText = await response.text()
-            errorText = errorText.substring(0, 100) + (errorText.length > 100 ? "..." : "")
-          } catch (textError) {
-            errorText = `Erro na API: Status ${response.status}`
-          }
-        }
-        throw new Error(errorText)
-      }
-
-      // Tentar fazer o parse do JSON com tratamento de erro
-      let data
-      try {
-        data = await response.json()
-      } catch (jsonError) {
-        throw new Error(`Resposta inválida: ${jsonError instanceof Error ? jsonError.message : "Erro desconhecido"}`)
-      }
-
-      // Atualizar o estado com os dados recebidos
-      setRedisStatus({
-        connected: data.connected,
-        redisUrl: data.redisUrl,
-        redisToken: data.redisToken,
-        envInfo: data.envInfo,
-        helpMessage: data.helpMessage,
-      })
-
-      // Se não estiver conectado, mostrar erro
-      if (!data.connected) {
-        setError(`Não foi possível conectar ao Redis. ${data.error || ""}`)
-
-        // Se tiver uma mensagem de ajuda, adicionar ao erro
-        if (data.helpMessage) {
-          setError((prev) => `${prev}\n\n${data.helpMessage}`)
-        }
-      }
-    } catch (fetchError) {
-      console.error("Error fetching redis status:", fetchError);
-      // Verificar se fetchError é um Error antes de acessar message
-      const errorMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
-      setError(`Erro ao verificar Redis: ${errorMsg}`);
-      setRedisStatus({ connected: false, redisUrl: "N/A", redisToken: "N/A", helpMessage: `Erro: ${errorMsg}` });
-    } finally {
-      setIsCheckingRedis(false)
-    }
-  }
-
-  // Função para gerar a descrição (atualizada)
-  const handleGenerateDescription = async () => {
-    if (!ebookTitle) {
-      setError("Por favor, insira um título para o ebook primeiro.");
-      return;
-    }
-    setIsGeneratingDescription(true);
-    setError(null);
-
-    try {
-      // Chamar a nova API
-      const response = await fetch("/api/generate-description", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ title: ebookTitle }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || "Falha ao gerar descrição na API.");
-      }
-
-      setEbookDescription(data.description);
-      setCurrentStep(2);
-
-    } catch (err) {
-      console.error("Failed to generate description:", err);
-      // Verificar se err é um Error antes de acessar message
-      const message = err instanceof Error ? err.message : String(err);
-      // Verificar se a mensagem já inclui o erro específico da chave API
-      if (message.includes("OpenAI API key is missing")) {
-         setError("Erro de configuração: Chave da API OpenAI não encontrada no servidor. Verifique as variáveis de ambiente na Vercel e faça redeploy.");
-      } else if (message.includes("Não foi possível gerar a descrição")) {
-         // Usar a mensagem de erro vinda da API que já é informativa
-         setError(message);
-      } else {
-         setError(`Erro ao gerar descrição: ${message}`);
-      }
-      setEbookDescription(""); // Limpar descrição em caso de erro
-    } finally {
-      setIsGeneratingDescription(false);
-    }
-  };
-
-  // Atualizar a função handleGenerateFullEbook para incluir o número de páginas
-  const handleGenerateFullEbook = async () => {
-    if (!ebookTitle.trim() || !ebookDescription.trim()) return
-
-    setError(null)
-    setIsGeneratingEbook(true)
-    setCurrentStep(3)
-
-    // Registrar o tempo de início
-    generationStartTimeRef.current = Date.now()
-
-    // Calcular estimativa inicial de tempo
-    const estimatedSecondsPerPage = ESTIMATED_TIME_PER_PAGE[contentMode as keyof typeof ESTIMATED_TIME_PER_PAGE] || 20
-    const initialEstimate = Math.ceil((pageCount * estimatedSecondsPerPage) / 60)
-    setEstimatedTimeRemaining(`${initialEstimate} minutos restantes`)
-
-    try {
-      // Criar o ebook na API
       const response = await fetch("/api/ebook", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          title: ebookTitle,
-          description: ebookDescription,
-          contentMode,
-          pageCount, // Adicionar o número de páginas à requisição
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
       })
 
-      // Verificar se a resposta é OK
-      if (!response.ok) {
-        // Tentar obter o texto da resposta para diagnóstico
-        let errorMessage = `Erro do servidor: ${response.status}`
-        try {
-          const errorData = await response.json()
-          errorMessage = errorData.error || errorMessage
-        } catch (jsonError) {
-          // Se não for JSON, tentar obter o texto
-          try {
-            const errorText = await response.text()
-            errorMessage = `${errorMessage} - ${errorText.substring(0, 100)}...`
-          } catch (textError) {
-            // Se não conseguir obter o texto, usar apenas o status
-          }
-        }
-        throw new Error(errorMessage)
-      }
-
-      // Tentar fazer o parse do JSON com tratamento de erro
-      let data
-      try {
-        data = await response.json()
-      } catch (jsonError) {
-        throw new Error(
-          `Resposta inválida do servidor: ${jsonError instanceof Error ? jsonError.message : "Erro desconhecido"}`,
-        )
-      }
-
-      if (data.success) {
-        setCurrentEbookId(data.ebookId)
-        setEbookState(data.state)
-
-        // Iniciar o worker para processar a fila
-        await startWorker(10)
-
-        // Iniciar o polling para atualizar o status
-        startPolling()
-      } else {
-        throw new Error(data.error || "Falha ao criar ebook")
-      }
-    } catch (error) {
-      console.error("Failed to generate ebook:", error)
-      setError(error instanceof Error ? error.message : "Erro ao gerar o ebook completo.")
-      setCurrentStep(2)
-    } finally {
-      setIsGeneratingEbook(false)
-    }
-  }
-
-  // Função para baixar o ebook
-  const handleDownloadEbook = () => {
-    // Log para verificar se a função é chamada
-    console.log("handleDownloadEbook called. Ebook ID:", currentEbookId);
-
-    if (!currentEbookId) {
-      setError("Não há ID de ebook atual para baixar.");
-      return;
-    }
-    // Construir a URL de download
-    const downloadUrl = `/api/ebook/${currentEbookId}/download`;
-    console.log("Attempting to download from:", downloadUrl);
-
-    // Iniciar o download (forma simples via navegação)
-    window.location.href = downloadUrl;
-  }
-
-  // Função para forçar a atualização do status
-  const handleRefreshStatus = () => {
-    updateEbookStatus()
-  }
-
-  // Função para continuar o processamento (chamando o worker)
-  const handleContinueProcessing = async () => {
-    // Verificar se o worker já está sendo chamado ou se não há ebookId
-    if (isStartingWorker || !currentEbookId) return;
-
-    try {
-      setIsStartingWorker(true); // Inicia o estado de loading
-      setError(null);
-
-      // Chamar a função que inicia/avisa o worker
-      const response = await startWorker();
-      console.log("Worker iniciado com sucesso:", response);
-
-      // Após iniciar o worker com sucesso:
-      // 1. Buscar o status imediatamente
-      await updateEbookStatus();
-      // 2. Garantir que o polling está ativo (ele pode ter parado por erro)
-      startPolling();
-
-    } catch (error) {
-      console.error("Erro ao tentar continuar processamento:", error);
-      setError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setIsStartingWorker(false); // Finaliza o estado de loading, mesmo com erro
-    }
-  };
-
-  // Função para salvar o ebook na biblioteca
-  const handleSaveToLibrary = async () => {
-    if (!ebookState || ebookPages.length === 0) return
-
-    try {
-      // Ordenar as páginas por índice
-      const sortedPages = [...ebookPages].sort((a, b) => a.index - b.index)
-
-      // Criar o objeto do ebook para salvar
-      const ebookToSave = {
-        id: currentEbookId,
-        title: ebookState.title,
-        description: ebookState.description,
-        contentMode: ebookState.contentMode,
-        totalPages: ebookState.totalPages,
-        completedPages: ebookState.completedPages,
-        status: ebookState.status,
-        createdAt: ebookState.createdAt,
-        pages: sortedPages.map((page) => ({
-          index: page.index,
-          content: page.content,
-        })),
-      }
-
-      // Salvar o ebook na API
-      const response = await fetch("/api/biblioteca", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(ebookToSave),
-      })
+      const result = await response.json()
 
       if (!response.ok) {
-        throw new Error(`Erro ao salvar ebook: ${response.status}`)
+        console.error("API Error Response:", result)
+        throw new Error(result.error || `Falha na geração do ebook: ${response.statusText}`)
       }
 
-      const data = await response.json()
-
-      if (data.success) {
-        // Mostrar mensagem de sucesso
-        alert("Ebook salvo na biblioteca com sucesso!")
-      } else {
-        throw new Error(data.error || "Falha ao salvar ebook")
+      const ebookId = result.ebookId
+      if (!ebookId) {
+        throw new Error("ID do Ebook não recebido do servidor.")
       }
-    } catch (error) {
-      console.error("Error saving ebook to library:", error)
-      setError(error instanceof Error ? error.message : "Erro ao salvar ebook na biblioteca")
+
+      console.log("Ebook generation started successfully, Ebook ID:", ebookId)
+      setGeneratedEbookId(ebookId)
+      handleWebSocket(ebookId)
+
+    } catch (error: any) {
+      console.error("Error starting ebook generation:", error)
+      setStatus("error")
+      setErrorMsg(error.message || "Ocorreu uma falha ao iniciar a geração do ebook.")
+      setProgress(0)
+      setStage("prompt")
     }
   }
 
-  // Preparar dados para o componente de páginas
-  const preparePageData = () => {
-    if (!ebookState) return []
-
-    // Criar um array de páginas com base no total de páginas do ebook
-    return Array.from({ length: ebookState.totalPages }, (_, i) => {
-      // Encontrar a página correspondente nos dados recebidos
-      const page = ebookPages.find((p) => p.index === i)
-      return {
-        index: i,
-        content: page?.content || "",
-        isGenerated: !!page,
-      }
-    })
-  }
-
-  // Preparar dados para páginas em processamento e na fila
-  const prepareProcessingAndQueuedPages = () => {
-    if (!ebookState) return { processingPages: [], queuedPages: [] }
-
-    const processingPages = []
-    const queuedPages = []
-
-    // Calcular quais páginas estão em processamento e quais estão na fila
-    for (let i = 0; i < ebookState.totalPages; i++) {
-      const page = ebookPages.find((p) => p.index === i)
-      if (!page) {
-        if (i < ebookState.totalPages - ebookState.queuedPages - ebookState.failedPages) {
-          processingPages.push(i)
-        } else {
-          queuedPages.push(i)
-        }
-      }
+  const handleNext = async () => {
+    const result = await trigger(["prompt"])
+    if (result) {
+      setStage("details")
     }
-
-    return { processingPages, queuedPages }
   }
 
-  // Renderizar o passo 1: Nome do Ebook
-  const renderStep1 = () => {
-    return (
-      <Card className="shadow-md border-border/40 overflow-hidden">
-        <CardHeader className="bg-muted/30">
-          <CardTitle className="text-xl">Nome do Ebook</CardTitle>
-        </CardHeader>
-        <CardContent className="p-6 space-y-6">
-          <div className="group relative">
-            <Label 
-              htmlFor="ebook-title" 
-              className="origin-start absolute top-1/2 block -translate-y-1/2 cursor-text px-1 text-sm text-muted-foreground/70 transition-all group-focus-within:pointer-events-none group-focus-within:top-0 group-focus-within:cursor-default group-focus-within:text-xs group-focus-within:font-medium group-focus-within:text-foreground has-[+input:not(:placeholder-shown)]:pointer-events-none has-[+input:not(:placeholder-shown)]:top-0 has-[+input:not(:placeholder-shown)]:cursor-default has-[+input:not(:placeholder-shown)]:text-xs has-[+input:not(:placeholder-shown)]:font-medium has-[+input:not(:placeholder-shown)]:text-foreground"
-            >
-              <span className="inline-flex bg-background px-2">Título do Ebook</span>
-            </Label>
-            <Input
-              id="ebook-title"
-              placeholder=""
-              value={ebookTitle}
-              onChange={(e) => setEbookTitle(e.target.value)}
-              className="shadow-sm shadow-black/5 transition-shadow focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20"
-            />
-          </div>
-        </CardContent>
-        <CardFooter className="px-6 py-4 bg-muted/10 border-t border-border/30">
-          <ButtonColorful
-            onClick={handleGenerateDescription}
-            disabled={!ebookTitle.trim() || isGeneratingDescription}
-            className="w-full"
-            label={isGeneratingDescription ? "Gerando descrição..." : "Próximo: Gerar Descrição"}
-            icon={isGeneratingDescription ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
-          />
-        </CardFooter>
-      </Card>
-    )
+  const handleBack = () => {
+    setStage("prompt")
   }
 
-  // Renderizar o passo 2: Descrição do Ebook
-  const renderStep2 = () => {
-    return (
-      <Card className="shadow-md border-border/40 overflow-hidden">
-        <CardHeader className="bg-muted/30">
-          <CardTitle className="text-xl">Configuração do Ebook</CardTitle>
-        </CardHeader>
-        <CardContent className="p-6 space-y-6">
-          <div className="group relative">
-            <Label 
-              htmlFor="ebook-description" 
-              className="origin-start absolute top-4 block cursor-text px-1 text-sm text-muted-foreground/70 transition-all group-focus-within:pointer-events-none group-focus-within:top-0 group-focus-within:cursor-default group-focus-within:text-xs group-focus-within:font-medium group-focus-within:text-foreground has-[+textarea:not(:placeholder-shown)]:pointer-events-none has-[+textarea:not(:placeholder-shown)]:top-0 has-[+textarea:not(:placeholder-shown)]:cursor-default has-[+textarea:not(:placeholder-shown)]:text-xs has-[+textarea:not(:placeholder-shown)]:font-medium has-[+textarea:not(:placeholder-shown)]:text-foreground"
-            >
-              <span className="inline-flex bg-background px-2">Descrição do Ebook</span>
-            </Label>
-            <Textarea
-              id="ebook-description"
-              className="min-h-[150px] shadow-sm shadow-black/5 transition-shadow focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20"
-              placeholder=""
-              value={ebookDescription}
-              onChange={(e) => setEbookDescription(e.target.value)}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
-            {/* Seletor de quantidade de páginas */}
-            <div className="space-y-2">
-              <Label htmlFor="page-count" className="text-sm font-medium">Quantidade de Páginas</Label>
-              <Select value={pageCount.toString()} onValueChange={(value) => setPageCount(Number(value))}>
-                <SelectTrigger id="page-count" className="shadow-sm shadow-black/5">
-                  <SelectValue placeholder="Selecione a quantidade de páginas" />
-                </SelectTrigger>
-                <SelectContent>
-                  {PAGE_COUNT_OPTIONS.map((count) => (
-                    <SelectItem key={count} value={count.toString()}>
-                      {count} páginas
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Seletor de densidade de conteúdo */}
-            <div className="space-y-2">
-              <Label htmlFor="content-mode" className="text-sm font-medium">Densidade de Conteúdo</Label>
-              <Select value={contentMode} onValueChange={setContentMode}>
-                <SelectTrigger id="content-mode" className="shadow-sm shadow-black/5">
-                  <SelectValue placeholder="Selecione a densidade de conteúdo" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="FULL">Completo (mais detalhado)</SelectItem>
-                  <SelectItem value="MEDIUM">Médio (equilibrado)</SelectItem>
-                  <SelectItem value="MINIMAL">Mínimo (menos detalhado)</SelectItem>
-                  <SelectItem value="ULTRA_MINIMAL">Ultra-mínimo (básico)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        </CardContent>
-        <CardFooter className="flex justify-between px-6 py-4 bg-muted/10 border-t border-border/30">
-          <Button variant="outline" onClick={() => setCurrentStep(1)} className="shadow-sm">
-            Voltar
-          </Button>
-          <ButtonColorful
-            onClick={handleGenerateFullEbook}
-            disabled={!ebookDescription.trim() || isGeneratingEbook}
-            label={isGeneratingEbook ? "Iniciando geração..." : "Gerar Ebook"}
-            icon={isGeneratingEbook ? <RefreshCw className="h-4 w-4 animate-spin" /> : <BookText className="h-4 w-4" />}
-          />
-        </CardFooter>
-      </Card>
-    )
+  const handleReset = () => {
+    reset()
+    setStatus("idle")
+    setProgress(0)
+    setErrorMsg(null)
+    setGeneratedEbookId(null)
+    setStage("prompt")
+    wsRef.current?.close()
   }
 
-  // Renderizar o passo 3: Geração do Ebook
-  const renderStep3 = () => {
-    const { processingPages, queuedPages } = prepareProcessingAndQueuedPages()
-    const pages = preparePageData()
+  const steps = ["Ideia Principal", "Detalhes", "Gerando", "Resultado"]
+  const currentStepIndex = stage === "prompt" ? 0 : stage === "details" ? 1 : stage === "generating" ? 2 : 3
 
-    return (
-      <Card className="shadow-md border-border/40 overflow-hidden">
-        <CardHeader className="bg-muted/30">
-          <CardTitle className="text-xl">Gerando seu Ebook</CardTitle>
-        </CardHeader>
-        <CardContent className="p-6 space-y-6">
-          {ebookState ? (
-            <GenerationStatus
-              progress={Math.round((ebookState.completedPages / ebookState.totalPages) * 100)}
-              stats={{
-                processing: ebookState.processingPages,
-                queued: ebookState.queuedPages,
-                completed: ebookState.completedPages,
-                failed: ebookState.failedPages,
-                total: ebookState.totalPages,
-              }}
-              estimatedTime={estimatedTimeRemaining}
-            />
-          ) : (
-            <div className="flex justify-center py-8">
-              <SimpleLoading text="Iniciando geração do ebook..." />
-            </div>
-          )}
+  const isPromptFilled = !!getValues("prompt") && !errors.prompt
+  const areDetailsValid = isFormValid && stage === 'details'
 
-          <div className="flex flex-wrap gap-3 mt-4">
-            <Button
-              variant="outline"
-              onClick={handleRefreshStatus}
-              disabled={isPolling}
-              className="shadow-sm"
-            >
-              <RefreshCw className={`mr-2 h-4 w-4 ${isPolling ? 'animate-spin' : ''}`} />
-              Atualizar Status
-            </Button>
-            
-            <Button
-              variant="outline"
-              onClick={handleContinueProcessing}
-              disabled={isStartingWorker || !currentEbookId || ebookState?.status === 'completed' || ebookState?.status === 'processing'}
-              className="shadow-sm"
-            >
-              {isStartingWorker ? (
-                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Play className="mr-2 h-4 w-4" />
-              )}
-              {isStartingWorker ? "Iniciando..." : "Continuar Processamento"}
-            </Button>
-          </div>
-
-          {ebookState && (
-            <div className="mt-6 border border-border/40 rounded-lg overflow-hidden shadow-sm">
-              <PageViewer
-                pages={pages}
-                processingPages={processingPages}
-                queuedPages={queuedPages}
-                onSelectPage={setSelectedPageIndex}
-                selectedPageIndex={selectedPageIndex}
+  const renderStage = () => {
+    switch (stage) {
+      case "prompt":
+        return (
+          <motion.div
+            key="prompt"
+            initial={{ opacity: 0, x: -50 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 50 }}
+            transition={{ duration: 0.3 }}
+          >
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-xl font-semibold">
+                <Sparkles className="w-5 h-5 text-purple-500" /> Qual a sua ideia para o Ebook?
+              </CardTitle>
+              <CardDescription>
+                Descreva o tema central, os tópicos principais ou a pergunta que seu ebook irá responder. Seja o mais claro possível!
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Controller
+                name="prompt"
+                control={control}
+                render={({ field }) => (
+                  <FloatingLabelTextarea
+                    id="prompt"
+                    label="Ideia central do Ebook"
+                    placeholder="Ex: Um guia completo sobre jardinagem para iniciantes em apartamentos."
+                    error={errors.prompt}
+                    register={field}
+                    value={field.value}
+                    getValues={getValues}
+                    maxLength={MAX_CHARS}
+                  />
+                )}
               />
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    )
+            </CardContent>
+            <CardFooter className="flex justify-end">
+              <ButtonColorful onClick={handleNext} disabled={!isPromptFilled}>
+                Avançar para Detalhes <Settings className="ml-2 h-4 w-4" />
+              </ButtonColorful>
+            </CardFooter>
+          </motion.div>
+        )
+      case "details":
+        return (
+          <motion.div
+            key="details"
+            initial={{ opacity: 0, x: -50 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 50 }}
+            transition={{ duration: 0.3 }}
+            className="space-y-4"
+          >
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-xl font-semibold">
+                <Settings className="w-5 h-5 text-indigo-500" /> Detalhes do Ebook
+              </CardTitle>
+              <CardDescription>
+                Refine as informações para personalizar a geração.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2">
+              <FloatingLabelInput
+                id="title"
+                label="Título do Ebook"
+                placeholder="Ex: Jardim Secreto na Varanda"
+                error={errors.title}
+                register={registerFormField("title")}
+                defaultValue={getValues("title")}
+              />
+              <FloatingLabelInput
+                id="author"
+                label="Nome do Autor"
+                placeholder="Ex: Maria Silva"
+                error={errors.author}
+                register={registerFormField("author")}
+                defaultValue={getValues("author")}
+              />
+              <FloatingLabelInput
+                id="targetAudience"
+                label="Público Alvo"
+                placeholder="Ex: Moradores de apartamento sem experiência prévia"
+                error={errors.targetAudience}
+                register={registerFormField("targetAudience")}
+                defaultValue={getValues("targetAudience")}
+              />
+              <FloatingLabelInput
+                id="writingStyle"
+                label="Estilo de Escrita"
+                placeholder="Ex: Amigável, passo a passo, com dicas práticas"
+                error={errors.writingStyle}
+                register={registerFormField("writingStyle")}
+                defaultValue={getValues("writingStyle")}
+              />
+            </CardContent>
+            <CardFooter className="flex justify-between">
+              <Button variant="outline" onClick={handleBack}>
+                Voltar
+              </Button>
+              <ButtonColorful type="submit" disabled={status === "generating" || !areDetailsValid}>
+                Gerar Ebook <Sparkles className="ml-2 h-4 w-4" />
+              </ButtonColorful>
+            </CardFooter>
+          </motion.div>
+        )
+      case "generating":
+        return (
+          <motion.div
+            key="generating"
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.5 }}
+            className="text-center py-12 px-6"
+          >
+            <Progress value={progress} className="w-full max-w-md mx-auto mb-4 h-3 [&>*]:bg-gradient-to-r [&>*]:from-indigo-500 [&>*]:via-purple-500 [&>*]:to-pink-500" />
+            <h3 className="text-2xl font-semibold mb-3">Gerando seu Ebook...</h3>
+            <p className="text-muted-foreground mb-6">
+              Isso pode levar alguns minutos. Estamos criando o conteúdo para você.
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {progress}% concluído
+              {totalPages > 0 && ` - Página ${currentPage} de ${totalPages}`}
+            </p>
+          </motion.div>
+        )
+      case "result":
+        return (
+          <motion.div
+            key="result"
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.5 }}
+            className="text-center py-12 px-6"
+          >
+            {status === "success" && generatedEbookId && (
+              <>
+                <motion.div initial={{ scale: 0 }} animate={{ scale: 1}} transition={{ type: 'spring', stiffness: 260, damping: 20 }}>
+                  <FileText className="h-16 w-16 text-green-500 mx-auto mb-6" />
+                </motion.div>
+                <h3 className="text-2xl font-semibold mb-3">Ebook Gerado com Sucesso!</h3>
+                <p className="text-muted-foreground mb-8">
+                  Seu ebook "{getValues("title") || 'sem título'}" está pronto.
+                </p>
+                <div className="flex flex-col sm:flex-row justify-center gap-4">
+                  <ButtonColorful
+                    onClick={() => window.location.href = `/api/ebook/${generatedEbookId}/download`}
+                  >
+                    <Download className="mr-2 h-4 w-4" /> Baixar PDF
+                  </ButtonColorful>
+                  <Button
+                    variant="outline"
+                    onClick={() => window.open(`/ebook/${generatedEbookId}/view`, '_blank')}
+                  >
+                    <Eye className="mr-2 h-4 w-4" /> Visualizar Online
+                  </Button>
+                  <Button variant="secondary" onClick={handleReset}>
+                    <Sparkles className="mr-2 h-4 w-4" /> Criar Novo Ebook
+                  </Button>
+                </div>
+              </>
+            )}
+            {status === "error" && (
+              <>
+                <motion.div initial={{ scale: 0 }} animate={{ scale: 1}} transition={{ type: 'spring', stiffness: 260, damping: 20 }}>
+                  <AlertCircle className="h-16 w-16 text-destructive mx-auto mb-6" />
+                </motion.div>
+                <h3 className="text-2xl font-semibold text-destructive mb-3">Ocorreu um Erro!</h3>
+                <Alert variant="destructive" className="max-w-md mx-auto mb-8 text-left">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Erro na Geração</AlertTitle>
+                  <AlertDescription>
+                    {errorMsg || "Não foi possível gerar o ebook. Tente novamente mais tarde ou ajuste o prompt."}
+                  </AlertDescription>
+                </Alert>
+                <Button variant="outline" onClick={handleReset}>
+                  Tentar Novamente
+                </Button>
+              </>
+            )}
+          </motion.div>
+        )
+    }
   }
 
-  // Renderizar o passo 4: Ebook Completo
-  const renderStep4 = () => {
-    const pages = preparePageData()
-
-    return (
-      <Card className="shadow-md border-border/40 overflow-hidden">
-        <CardHeader className="bg-muted/30">
-          <CardTitle className="text-xl">
-            {ebookState?.status === "completed"
-              ? "Ebook Gerado com Sucesso"
-              : ebookState?.status === "partial"
-                ? "Ebook Gerado Parcialmente"
-                : "Falha na Geração do Ebook"}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-6 space-y-6">
-          {ebookState && (
-            <div className="border border-border/40 p-5 rounded-lg mb-6 bg-muted/10 shadow-sm">
-              <p className="font-medium text-lg">{ebookState.title}</p>
-              <p className="text-sm text-muted-foreground mt-2">{ebookState.description}</p>
-              <div className="mt-4 text-sm flex items-center gap-2">
-                <span className="text-muted-foreground">Status:</span>{" "}
-                <span className="bg-primary/10 text-primary px-2 py-0.5 rounded-full text-xs font-medium">
-                  {ebookState.completedPages} de {ebookState.totalPages} páginas geradas
-                  {ebookState.failedPages > 0 && ` (${ebookState.failedPages} com falha)`}
-                </span>
-              </div>
-            </div>
-          )}
-
-          <div className="border border-border/40 rounded-lg overflow-hidden shadow-sm">
-            <PageViewer 
-              pages={pages} 
-              onSelectPage={setSelectedPageIndex} 
-              selectedPageIndex={selectedPageIndex} 
-            />
-          </div>
-        </CardContent>
-        <CardFooter className="flex justify-between px-6 py-4 bg-muted/10 border-t border-border/30">
-          <Button variant="outline" onClick={() => setCurrentStep(1)} className="shadow-sm">
-            Criar Novo Ebook
-          </Button>
-          <div className="flex gap-3">
-            <Button 
-              variant="outline" 
-              onClick={handleSaveToLibrary} 
-              disabled={!ebookState || ebookPages.length === 0}
-              className="shadow-sm"
-            >
-              <Library className="mr-2 h-4 w-4" />
-              Salvar na Biblioteca
-            </Button>
-            <ButtonColorful
-              onClick={handleDownloadEbook}
-              disabled={!ebookState || ebookPages.length === 0}
-              label="Baixar Ebook"
-              icon={<Download className="h-4 w-4" />}
-            />
-          </div>
-        </CardFooter>
-      </Card>
-    )
-  }
+  useEffect(() => {
+    if (status === 'success' || status === 'error') {
+      setStage('result')
+    } else if (status === 'generating') {
+      setStage('generating')
+    }
+  }, [status])
 
   return (
-    <div className="container mx-auto py-8">
-      <h1 className="text-3xl font-semibold mb-8 text-center">Gerador de Ebook</h1>
+    <div className="container mx-auto px-4 py-8 md:py-12 max-w-4xl">
+      <header className="mb-8 md:mb-12 text-center">
+        <h1 className="text-3xl md:text-4xl font-bold tracking-tight mb-2 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 text-transparent bg-clip-text">
+          Ebookly ⚡️ Generator
+        </h1>
+        <p className="text-muted-foreground text-lg">
+          Transforme suas ideias em ebooks completos com o poder da IA.
+        </p>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="mt-4 text-sm text-primary hover:text-primary/90"
+          onClick={() => router.push('/biblioteca')}
+        >
+          <Library className="mr-2 h-4 w-4" />
+          Ver minha Biblioteca
+        </Button>
+      </header>
 
-      {error && (
-        <Alert variant="destructive" className="mb-8 border-destructive/30 shadow-sm">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Erro</AlertTitle>
-          <AlertDescription className="whitespace-pre-line">{error}</AlertDescription>
-        </Alert>
-      )}
+      <Card className="w-full shadow-xl border border-border/40 rounded-xl overflow-hidden bg-card">
+        {(stage !== 'result') && (
+          <div className="px-6 pt-6 border-b border-border/20 pb-6">
+            <StepIndicator steps={steps} currentStep={currentStepIndex + 1} />
+          </div>
+        )}
 
-      {/* Indicador de progresso dos passos */}
-      <StepIndicator steps={STEPS} currentStep={currentStep} className="mb-8" />
+        {status === "error" && stage !== 'result' && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="px-6 py-4 border-b border-destructive/30 bg-destructive/10"
+          >
+            <Alert variant="destructive" className="bg-transparent border-none p-0">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>Erro na Geração</AlertTitle>
+              <AlertDescription>
+                {errorMsg || "Não foi possível gerar o ebook."}
+                {' '} <Button variant="link" onClick={handleReset} className="p-0 h-auto text-destructive font-semibold underline">Tentar Novamente</Button>
+              </AlertDescription>
+            </Alert>
+          </motion.div>
+        )}
 
-      {/* Renderizar o passo atual */}
-      <div className="max-w-3xl mx-auto">
-        {currentStep === 1 && renderStep1()}
-        {currentStep === 2 && renderStep2()}
-        {currentStep === 3 && renderStep3()}
-        {currentStep === 4 && renderStep4()}
-      </div>
+        <div className={cn("transition-all duration-300", stage !== 'generating' && stage !== 'result' ? 'p-6' : '')}>
+          <form onSubmit={handleSubmit(onSubmit)}>
+            <AnimatePresence mode="wait">
+              {renderStage()}
+            </AnimatePresence>
+          </form>
+        </div>
+      </Card>
+
+      <footer className="text-center mt-12 text-sm text-muted-foreground">
+        Powered by AI Magic ✨
+      </footer>
     </div>
   )
 }
 
 // Custom Button Component with gradient effect
 interface ButtonColorfulProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  label: string;
-  icon?: React.ReactNode;
+  children: React.ReactNode;
 }
 
 function ButtonColorful({
   className,
-  label,
-  icon,
-  disabled,
+  children,
   ...props
 }: ButtonColorfulProps) {
   return (
     <Button
       className={cn(
-        "relative h-10 px-4 overflow-hidden",
-        "bg-zinc-900 dark:bg-zinc-100",
-        "transition-all duration-200",
-        "group",
+        "bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 text-white hover:opacity-90 transition-opacity duration-300 shadow-md focus:ring-2 focus:ring-offset-2 focus:ring-purple-500",
         className
       )}
-      disabled={disabled}
       {...props}
     >
-      {/* Gradient background effect */}
-      <div
-        className={cn(
-          "absolute inset-0",
-          "bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500",
-          "opacity-40 group-hover:opacity-80",
-          "blur transition-opacity duration-500"
-        )}
-      />
-
-      {/* Content */}
-      <div className="relative flex items-center justify-center gap-2">
-        <span className="text-white dark:text-zinc-900">{label}</span>
-        {icon && <span className="text-white/90 dark:text-zinc-900/90">{icon}</span>}
-      </div>
+      {children}
     </Button>
+  );
+}
+
+// Floating Label Input Component
+function FloatingLabelInput({ label, id, error, register, ...props }: any) {
+  const [isFocused, setIsFocused] = useState(false);
+  const [hasValue, setHasValue] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleFocus = () => setIsFocused(true);
+  const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+    setIsFocused(false);
+    setHasValue(e.target.value !== '');
+  };
+
+  // Check initial value on mount
+  useEffect(() => {
+    if (inputRef.current?.value) {
+      setHasValue(true);
+    }
+    // Also check if there's a defaultValue passed via props (from react-hook-form)
+    else if (props.defaultValue) {
+      setHasValue(true);
+    }
+  }, [props.defaultValue]);
+
+  return (
+    <div className="relative pt-4">
+      <motion.label
+        htmlFor={id}
+        className={cn(
+          "absolute left-3 transition-all duration-200 ease-in-out pointer-events-none bg-background px-1",
+          (isFocused || hasValue) ? "-top-2 text-xs text-primary" : "top-[1.125rem] text-sm text-muted-foreground"
+        )}
+        initial={false}
+        animate={{
+          top: (isFocused || hasValue) ? -8 : 18,
+          fontSize: (isFocused || hasValue) ? '0.75rem' : '0.875rem',
+          color: (isFocused || hasValue) ? 'hsl(var(--primary))' : 'hsl(var(--muted-foreground))'
+        }}
+        transition={{ duration: 0.2 }}
+      >
+        {label}
+      </motion.label>
+      <Input
+        id={id}
+        ref={inputRef}
+        className={cn("peer h-10 pt-3", error ? "border-destructive" : "")}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        onChange={(e) => {
+          setHasValue(e.target.value !== '');
+          if (register) {
+            register.onChange(e);
+          }
+        }}
+        {...register}
+        {...props}
+      />
+      {error && <p className="text-xs text-destructive mt-1">{error.message}</p>}
+    </div>
+  );
+}
+
+// Floating Label Textarea Component
+function FloatingLabelTextarea({ label, id, error, register, getValues, ...props }: any) {
+  const [isFocused, setIsFocused] = useState(false);
+  const [hasValue, setHasValue] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const handleFocus = () => setIsFocused(true);
+  const handleBlur = (e: React.FocusEvent<HTMLTextAreaElement>) => {
+    setIsFocused(false);
+    setHasValue(e.target.value !== '');
+  };
+
+  // Check initial value on mount
+  useEffect(() => {
+    if (textareaRef.current?.value) {
+      setHasValue(true);
+    }
+    // Also check if there's a defaultValue passed via props (from react-hook-form)
+    else if (props.defaultValue) {
+      setHasValue(true);
+    }
+  }, [props.defaultValue]);
+
+  return (
+    <div className="relative pt-4">
+      <motion.label
+        htmlFor={id}
+        className={cn(
+          "absolute left-3 transition-all duration-200 ease-in-out pointer-events-none bg-background px-1",
+          (isFocused || hasValue) ? "-top-2 text-xs text-primary" : "top-2.5 text-sm text-muted-foreground"
+        )}
+        initial={false}
+        animate={{
+          top: (isFocused || hasValue) ? -8 : 10,
+          fontSize: (isFocused || hasValue) ? '0.75rem' : '0.875rem',
+          color: (isFocused || hasValue) ? 'hsl(var(--primary))' : 'hsl(var(--muted-foreground))'
+        }}
+        transition={{ duration: 0.2 }}
+      >
+        {label}
+      </motion.label>
+      <Textarea
+        id={id}
+        ref={textareaRef}
+        className={cn("peer resize-none min-h-[120px] pt-3", error ? "border-destructive" : "")}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        onChange={(e) => {
+          setHasValue(e.target.value !== '');
+          if (register) {
+            register.onChange(e);
+          }
+        }}
+        {...register}
+        {...props}
+      />
+      {error && <p className="text-xs text-destructive mt-1">{error.message}</p>}
+      <p className="text-xs text-muted-foreground mt-1 text-right">
+        {(props.value?.length !== undefined ? props.value.length : (register?.name && getValues ? getValues(register.name)?.length : 0)) || 0}/{MAX_CHARS}
+      </p>
+    </div>
   );
 }
