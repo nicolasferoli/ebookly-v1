@@ -295,25 +295,25 @@ export async function getEbookState(ebookId: string): Promise<EbookQueueState | 
   }
 }
 
-// Função para obter as páginas de um ebook (otimizada com MGET)
+// Função para obter as páginas de um ebook (otimizada com MGET e parse seguro)
 export async function getEbookPages(ebookId: string): Promise<EbookQueuePage[]> {
   try {
     const isConnected = await checkRedisConnection()
     if (!isConnected) {
-      console.warn("Não foi possível conectar ao Redis. Retornando array vazio.")
+      console.warn("[getEbookPages] Não foi possível conectar ao Redis. Retornando array vazio.")
       return []
     }
 
     const client = getRedisClient()
     if (!client) {
-      console.warn("Cliente Redis não está disponível. Retornando array vazio.")
+      console.warn("[getEbookPages] Cliente Redis não está disponível. Retornando array vazio.")
       return []
     }
 
     // Primeiro, obter o estado do ebook para saber o total de páginas
     const ebookState = await getEbookState(ebookId);
     if (!ebookState) {
-        console.warn(`Estado do ebook ${ebookId} não encontrado ao buscar páginas. Retornando array vazio.`);
+        console.warn(`[getEbookPages] Estado do ebook ${ebookId} não encontrado ao buscar páginas. Retornando array vazio.`);
         return [];
     }
     const totalPages = ebookState.totalPages;
@@ -325,30 +325,45 @@ export async function getEbookPages(ebookId: string): Promise<EbookQueuePage[]> 
     // Criar a lista de todas as chaves de página
     const pageKeys = Array.from({ length: totalPages }, (_, i) => `${EBOOK_PAGE_PREFIX}${ebookId}:${i}`);
 
-    // Usar MGET para buscar todas as chaves de uma vez
-    const results = await client.mget<string[]>(...pageKeys); // Esperar sempre array de strings (ou null)
+    // Usar MGET. A Upstash pode retornar (string | null)[]
+    const results = await client.mget<string[]>(...pageKeys);
 
     const pages: EbookQueuePage[] = [];
-    results.forEach((pageData, index) => {
-      // pageData será string ou null
-      if (!pageData) {
-         // Ignorar resultados nulos (chave não existe)
-         return;
+    results.forEach((pageDataString, index) => {
+      const pageKey = pageKeys[index]; // Obter a chave para logs de erro
+      if (pageDataString === null || pageDataString === undefined) {
+         // Explicitamente ignorar nulos/undefined retornados pelo mget
+         // console.log(`[getEbookPages] Dado nulo/undefined para chave ${pageKey}`);
+         return; 
       }
-
+      
+      // Adicionar try-catch em volta do parse
       try {
-        // Fazer o parse da string JSON
-        const parsedPage = JSON.parse(pageData) as EbookQueuePage;
+        // Garantir que é uma string antes de tentar parse
+        if (typeof pageDataString !== 'string') {
+            console.error(`[getEbookPages] Tipo inesperado (${typeof pageDataString}) recebido para chave ${pageKey}. Esperado string.`);
+            return; // Pular este item
+        }
+        
+        // Se for string vazia, tratar como inválido ou pular?
+        if (pageDataString.trim() === '') {
+            console.warn(`[getEbookPages] String vazia recebida para chave ${pageKey}. Pulando.`);
+            return; // Pular strings vazias
+        }
 
-        // Validar o objeto parseado
+        const parsedPage = JSON.parse(pageDataString) as EbookQueuePage;
+        
+        // Validar minimamente após parse
         if (parsedPage && parsedPage.ebookId && typeof parsedPage.pageIndex === 'number' && parsedPage.pageTitle) {
             pages.push(parsedPage);
         } else {
-            console.warn(`Dados da página ${index} inválidos após parse:`, parsedPage);
+            console.error(`[getEbookPages] Dados da página inválidos após parse para chave ${pageKey}:`, parsedPage);
         }
 
       } catch (parseError) {
-        console.error(`Erro ao fazer parse da página ${index} (chave ${pageKeys[index]}):`, parseError, "Data String:", pageData);
+        // Pegar erros do JSON.parse
+        console.error(`[getEbookPages] Erro no JSON.parse da chave ${pageKey}:`, parseError, "Data String:", pageDataString);
+        // Continuar para o próximo item em vez de quebrar o loop
       }
     });
 
@@ -358,7 +373,7 @@ export async function getEbookPages(ebookId: string): Promise<EbookQueuePage[]> 
     return pages;
 
   } catch (error) {
-    console.error(`Erro ao obter páginas do ebook ${ebookId} com mget:`, error);
+    console.error(`[getEbookPages] Erro geral ao obter páginas do ebook ${ebookId} com mget:`, error);
     return []; // Retornar array vazio em caso de erro
   }
 }
