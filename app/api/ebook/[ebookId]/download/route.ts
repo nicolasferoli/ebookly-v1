@@ -130,7 +130,7 @@ function generateEbookHtml(state: any, pages: EbookQueuePage[]): string {
     <body>
       <!-- Página de Capa -->
       <div class="cover-page">
-        <h1>${state.title}</h1> {/* Corrigido: Título dentro do H1 */}
+        <h1>${state.title}</h1>
         <p class="description">${state.description}</p>
       </div>
 
