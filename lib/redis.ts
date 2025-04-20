@@ -182,8 +182,12 @@ export async function createEbookQueue(
       updatedAt: Date.now(),
     }
 
-    // Salvar o estado do ebook no Redis
-    await client.set(`${EBOOK_STATE_PREFIX}${ebookId}`, JSON.stringify(ebookState))
+    // Salvar o estado do ebook no Redis como HASH
+    // Convert all values to string for hmset, as Upstash Redis client might require it
+    const stateHash = Object.fromEntries(
+       Object.entries(ebookState).map(([key, value]) => [key, String(value)])
+    );
+    await client.hmset(`${EBOOK_STATE_PREFIX}${ebookId}`, stateHash); 
 
     // Adicionar cada página à fila
     const queuePromises = pageTitles.map((pageTitle, index) => {
