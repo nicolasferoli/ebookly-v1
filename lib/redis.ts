@@ -244,54 +244,53 @@ export async function getEbookState(ebookId: string): Promise<EbookQueueState | 
       return null
     }
 
-    // Obter o estado do ebook do Redis. A biblioteca pode retornar string ou objeto.
-    const ebookStateData = await client.get(`${EBOOK_STATE_PREFIX}${ebookId}`);
+    // Obter o estado do ebook do Redis usando HGETALL, pois agora é um Hash
+    const stateHash = await client.hgetall<{ [key: string]: string }>(`${EBOOK_STATE_PREFIX}${ebookId}`);
 
-    if (!ebookStateData) {
-      console.log(`[getEbookState] Dados não encontrados para ${ebookId}`);
+    if (!stateHash || Object.keys(stateHash).length === 0) {
+      console.log(`[getEbookState] Dados não encontrados ou hash vazio para ${ebookId}`);
       return null;
     }
 
-    // Log Diagnóstico 1: Tipo de dado recebido
-    console.log(`[getEbookState] Tipo de dado recebido para ${ebookId}: ${typeof ebookStateData}`);
-    console.log(`[getEbookState] Valor recebido (preview): ${JSON.stringify(ebookStateData)?.substring(0, 100)}...`);
+    // Log Diagnóstico: Mostrar o Hash bruto recebido
+    console.log(`[getEbookState] Hash bruto recebido para ${ebookId}:`, stateHash);
 
-    // Verificar se já é um objeto
-    if (typeof ebookStateData === "object" && ebookStateData !== null) {
-        // Log Diagnóstico 2: Entrou no bloco 'object'
-        console.log(`[getEbookState] Tratando ${ebookId} como objeto pré-parseado.`);
-        // Validar minimamente se parece um EbookQueueState
-        if ('id' in ebookStateData && 'title' in ebookStateData && 'totalPages' in ebookStateData) {
-            return ebookStateData as EbookQueueState; 
-        } else {
-            console.error("Objeto retornado pelo Redis para ebook state é inválido (bloco object):", ebookStateData);
-            return null;
-        }
-    }
-    
-    // Se for uma string, tentar fazer o parse
-    if (typeof ebookStateData === "string") {
-        // Log Diagnóstico 3: Vai tentar fazer parse
-        console.log(`[getEbookState] Tentando JSON.parse para ${ebookId}.`);
-        try {
-            const parsedState = JSON.parse(ebookStateData) as EbookQueueState;
-             // Validar minimamente após parse
-            if (parsedState && parsedState.id && parsedState.title && typeof parsedState.totalPages === 'number') {
-                return parsedState;
-            } else {
-                console.error("Estado do ebook após parse é inválido (bloco string):", parsedState);
-                return null;
-            }
-        } catch (parseError) {
-            console.error("Erro no JSON.parse do estado do ebook string:", parseError);
-            console.error("Conteúdo recebido (string):", ebookStateData);
-            return null; 
-        }
-    }
+    // Converter o Hash (onde todos os valores são strings) para o tipo EbookQueueState
+    try {
+      // Verificar se campos essenciais existem antes da conversão
+      if (!stateHash.id || !stateHash.title || !stateHash.totalPages) {
+         console.error(`[getEbookState] Hash recebido para ${ebookId} não contém campos essenciais.`);
+         return null;
+      }
 
-    // Se não for nem objeto nem string (inesperado)
-    console.error(`[getEbookState] Tipo inesperado (${typeof ebookStateData}) recebido para ${ebookId}.`);
-    return null;
+      const ebookState: EbookQueueState = {
+        id: stateHash.id,
+        title: stateHash.title,
+        description: stateHash.description || "",
+        contentMode: stateHash.contentMode || "MEDIUM",
+        status: stateHash.status as EbookQueueState['status'] || "failed",
+        // Converter campos numéricos de string para number
+        totalPages: parseInt(stateHash.totalPages, 10),
+        completedPages: parseInt(stateHash.completedPages || "0", 10),
+        processingPages: parseInt(stateHash.processingPages || "0", 10),
+        queuedPages: parseInt(stateHash.queuedPages || "0", 10),
+        failedPages: parseInt(stateHash.failedPages || "0", 10),
+        createdAt: parseInt(stateHash.createdAt, 10),
+        updatedAt: parseInt(stateHash.updatedAt, 10),
+      };
+
+      // Validar se as conversões numéricas resultaram em números válidos
+      if (isNaN(ebookState.totalPages) || isNaN(ebookState.createdAt) || isNaN(ebookState.updatedAt)) {
+         console.error(`[getEbookState] Falha ao converter campos numéricos essenciais para ${ebookId}.`);
+         return null;
+      }
+
+      return ebookState;
+
+    } catch (conversionError) {
+        console.error(`[getEbookState] Erro ao converter hash para EbookQueueState para ${ebookId}:`, conversionError);
+        return null;
+    }
 
   } catch (error) {
     console.error("Erro ao obter estado do ebook:", error);
