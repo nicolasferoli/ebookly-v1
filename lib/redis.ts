@@ -1,5 +1,10 @@
 import { Redis } from "@upstash/redis"
 
+// Prefixos para as chaves no Redis (MOVIDOS PARA O TOPO)
+export const EBOOK_STATE_PREFIX = "ebook:state:";
+export const EBOOK_PAGES_PREFIX = "ebook:pages:";
+export const EBOOK_PAGE_PREFIX = "ebook:page:";
+
 // Verificar se as variáveis de ambiente estão definidas
 // Priorizar a URL da API REST (KV_REST_API_URL) sobre as URLs de conexão direta
 const redisUrl = process.env.KV_REST_API_URL || process.env.REDIS_URL || process.env.KV_URL || ""
@@ -106,11 +111,6 @@ export function getRedisClient(): Redis | null {
   return redis
 }
 
-// Prefixos para as chaves no Redis
-const EBOOK_PREFIX = "ebook:"
-const EBOOK_PAGE_PREFIX = "ebook-page:"
-const EBOOK_QUEUE_PREFIX = "ebook-queue:"
-
 // Tipos para o estado do ebook
 export type EbookQueueState = {
   id: string
@@ -183,7 +183,7 @@ export async function createEbookQueue(
     }
 
     // Salvar o estado do ebook no Redis
-    await client.set(`${EBOOK_PREFIX}${ebookId}`, JSON.stringify(ebookState))
+    await client.set(`${EBOOK_STATE_PREFIX}${ebookId}`, JSON.stringify(ebookState))
 
     // Adicionar cada página à fila
     const queuePromises = pageTitles.map((pageTitle, index) => {
@@ -202,7 +202,7 @@ export async function createEbookQueue(
       return client.set(`${EBOOK_PAGE_PREFIX}${ebookId}:${index}`, JSON.stringify(page)).then(() => {
         // Adicionar à fila de processamento
         return client.lpush(
-          `${EBOOK_QUEUE_PREFIX}pages`,
+          `${EBOOK_PAGES_PREFIX}pages`,
           JSON.stringify({
             ebookId,
             pageIndex: index,
@@ -241,7 +241,7 @@ export async function getEbookState(ebookId: string): Promise<EbookQueueState | 
     }
 
     // Obter o estado do ebook do Redis. A biblioteca pode retornar string ou objeto.
-    const ebookStateData = await client.get(`${EBOOK_PREFIX}${ebookId}`);
+    const ebookStateData = await client.get(`${EBOOK_STATE_PREFIX}${ebookId}`);
 
     if (!ebookStateData) {
       console.log(`[getEbookState] Dados não encontrados para ${ebookId}`);
@@ -381,7 +381,7 @@ export async function getNextQueueItem(): Promise<{ ebookId: string; pageIndex: 
     }
 
     // Obter o próximo item da fila
-    const item = await client.lpop(`${EBOOK_QUEUE_PREFIX}pages`)
+    const item = await client.lpop(`${EBOOK_PAGES_PREFIX}pages`)
 
     if (!item) {
       return null
