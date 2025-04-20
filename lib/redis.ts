@@ -600,4 +600,41 @@ export async function getEbookPage(
 // Função para atualizar o status geral do ebook (MODIFICADA para HASH)
 export async function updateEbookOverallStatus(
   ebookId: string,
-// ... (rest of the file)
+  newStatus: EbookQueueState['status']
+): Promise<boolean> {
+  try {
+    const client = getRedisClient();
+    if (!client) {
+      console.warn("[updateEbookOverallStatus] Redis client not available.");
+      return false;
+    }
+    const stateKey = `${EBOOK_STATE_PREFIX}${ebookId}`;
+
+    // Verifica se o hash existe antes de tentar atualizar
+    const exists = await client.exists(stateKey);
+    if (!exists) {
+      console.warn(`[updateEbookOverallStatus] Ebook state key ${stateKey} does not exist. Cannot update status.`);
+      return false;
+    }
+
+    // Atualiza apenas o campo 'status' e 'updatedAt' no hash
+    const result = await client.hmset(stateKey, {
+      status: newStatus,
+      updatedAt: String(Date.now()) // Atualiza também o timestamp
+    });
+
+    // hmset retorna 'OK' em sucesso no Upstash Redis v1/v2
+    // Verificar se a resposta foi 'OK' pode ser mais robusto
+    if (result === "OK") {
+        console.log(`[updateEbookOverallStatus] Status geral do ebook ${ebookId} atualizado para ${newStatus}`);
+        return true;
+    } else {
+        console.warn(`[updateEbookOverallStatus] Falha ao atualizar status para ${newStatus} para o ebook ${ebookId}. Resultado:`, result);
+        return false;
+    }
+
+  } catch (error) {
+    console.error(`[updateEbookOverallStatus] Erro ao atualizar status geral do ebook ${ebookId} para ${newStatus}:`, error);
+    return false;
+  }
+}
