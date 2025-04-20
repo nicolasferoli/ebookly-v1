@@ -7,7 +7,8 @@ import {
   getEbookPage,
   EBOOK_PAGE_PREFIX,
   EBOOK_PAGES_PREFIX,
-  type EbookQueuePage // <-- Adicionar tipo aqui
+  type EbookQueuePage, // <-- Adicionar tipo aqui
+  updateEbookOverallStatus
 } from './lib/redis'; 
 import { generateText } from 'ai';
 import { openai } from '@ai-sdk/openai';
@@ -144,6 +145,26 @@ async function processQueueItem(item: QueueItem): Promise<boolean> {
 
     await updatePageStatus(ebookId, pageIndex, "completed", content);
     console.log(`[Worker] Status updated to completed for ${ebookId}-${pageIndex}`);
+
+    // <<< INÍCIO: Lógica para verificar conclusão geral >>>
+    try {
+        const finalState = await getEbookState(ebookId);
+        if (finalState && finalState.completedPages === finalState.totalPages) {
+            console.log(`[Worker] Ebook ${ebookId} concluído! Atualizando status geral para completed.`);
+            // Chamar a função para atualizar o status geral
+            // A função updateEbookOverallStatus já existe em lib/redis
+            const success = await updateEbookOverallStatus(ebookId, "completed");
+            if (!success) {
+                 console.error(`[Worker] Falha ao tentar atualizar o status geral do ebook ${ebookId} para completed.`);
+            }
+        } else if (finalState) {
+            // Log para depuração: mostrar contagem se ainda não completo
+            console.log(`[Worker] Ebook ${ebookId} ainda não concluído (${finalState.completedPages}/${finalState.totalPages}).`);
+        }
+    } catch (checkError) {
+        console.error(`[Worker] Erro ao verificar/atualizar status geral do ebook ${ebookId} após completar a página ${pageIndex}:`, checkError);
+    }
+    // <<< FIM: Lógica para verificar conclusão geral >>>
 
     return true;
   } catch (error) {
