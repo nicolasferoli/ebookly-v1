@@ -1,4 +1,3 @@
-
 "use client"
 
 import { useState, useEffect } from "react"
@@ -183,7 +182,7 @@ export default function BibliotecaPage() {
     return (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filtered.map((ebook) => (
-          <Card key={ebook.id} className="border-0 shadow-sm">
+          <Card key={ebook.id} className="shadow-md border border-border/40 overflow-hidden">
             <CardHeader className="pb-2">
               <CardTitle className="text-base">{ebook.title}</CardTitle>
               <p className="text-xs text-muted-foreground line-clamp-2">{ebook.description}</p>
@@ -242,47 +241,53 @@ export default function BibliotecaPage() {
     const pages = preparePageData()
 
     return (
-      <div className="space-y-6">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-          <div>
-            <h2 className="text-xl font-medium">{selectedEbook.title}</h2>
-            <p className="text-sm text-muted-foreground mt-1">{selectedEbook.description}</p>
+      <Card className="mt-6 shadow-md border border-border/40 overflow-hidden">
+        <CardHeader className="flex flex-row items-center justify-between bg-muted/30">
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" size="icon" onClick={() => setSelectedEbook(null)} className="-ml-2">
+              <ArrowLeft className="h-5 w-5" />
+            </Button>
+            <CardTitle className="text-xl">{selectedEbook.title}</CardTitle>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => handleDownloadEbook(selectedEbook)}>
               <Download className="h-4 w-4 mr-2" />
               Baixar
             </Button>
-            <Button variant="outline" onClick={() => setSelectedEbook(null)} className="w-full sm:w-auto">
-              <ArrowLeft className="h-4 w-4 mr-2" />
-              Voltar
-            </Button>
           </div>
-        </div>
-
-        <div className="border p-4 rounded-md">
-          <div className="text-sm">
-            <div className="flex justify-between mb-1">
-              <span className="text-muted-foreground">Status:</span>
-              <span>
-                {selectedEbook.status === "completed"
-                  ? "Completo"
-                  : selectedEbook.status === "partial"
-                    ? "Parcial"
-                    : "Com falhas"}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Páginas:</span>
-              <span>
-                {selectedEbook.completedPages} de {selectedEbook.totalPages} páginas geradas
-              </span>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+            <div>
+              <h2 className="text-xl font-medium">{selectedEbook.title}</h2>
+              <p className="text-sm text-muted-foreground mt-1">{selectedEbook.description}</p>
             </div>
           </div>
-        </div>
 
-        <PageViewer pages={pages} onSelectPage={setSelectedPageIndex} selectedPageIndex={selectedPageIndex} />
-      </div>
+          <div className="border p-4 rounded-md">
+            <div className="text-sm">
+              <div className="flex justify-between mb-1">
+                <span className="text-muted-foreground">Status:</span>
+                <span>
+                  {selectedEbook.status === "completed"
+                    ? "Completo"
+                    : selectedEbook.status === "partial"
+                      ? "Parcial"
+                      : "Com falhas"}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Páginas:</span>
+                <span>
+                  {selectedEbook.completedPages} de {selectedEbook.totalPages} páginas geradas
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <PageViewer pages={pages} onSelectPage={setSelectedPageIndex} selectedPageIndex={selectedPageIndex} />
+        </CardContent>
+      </Card>
     )
   }
 
